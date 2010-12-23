@@ -10,6 +10,7 @@ source "fs/ext2/Kconfig"
 source "fs/ext3/Kconfig"
 source "fs/next3/Kconfig"
 source "fs/ext4/Kconfig"
+source "fs/dext4/Kconfig"
 
 config FS_XIP
 # execute in place
@@ -26,7 +27,8 @@ config FS_MBCACHE
 	default y if EXT2_FS=y && EXT2_FS_XATTR
 	default y if EXT3_FS=y && EXT3_FS_XATTR
 	default y if EXT4_FS=y && EXT4_FS_XATTR
-	default m if EXT2_FS_XATTR || EXT3_FS_XATTR || EXT4_FS_XATTR
+	default y if DEXT4_FS=y && DEXT4_FS_XATTR
+	default m if EXT2_FS_XATTR || EXT3_FS_XATTR || EXT4_FS_XATTR || DEXT4_FS_XATTR
 
 source "fs/reiserfs/Kconfig"
 source "fs/jfs/Kconfig"

@@ -71,6 +71,7 @@ obj-$(CONFIG_EXT2_FS)		+= ext2/
 # unless explicitly requested by rootfstype
 obj-$(CONFIG_NEXT3_FS)		+= next3/
 obj-$(CONFIG_EXT4_FS)		+= ext4/
+obj-$(CONFIG_DEXT4_FS)		+= dext4/
 obj-$(CONFIG_JBD)		+= jbd/
 obj-$(CONFIG_JBD2)		+= jbd2/
 obj-$(CONFIG_CRAMFS)		+= cramfs/

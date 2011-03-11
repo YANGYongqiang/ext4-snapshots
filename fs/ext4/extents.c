@@ -3522,8 +3522,11 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	int err = 0, depth, ret, cache_type;
 	unsigned int allocated = 0;
 	struct ext4_allocation_request ar;
+	
 	ext4_io_end_t *io = EXT4_I(inode)->cur_aio_dio;
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	ex = NULL;
+#endif
 	ext_debug("blocks %u/%u requested for inode %lu\n",
 		  map->m_lblk, map->m_len, inode->i_ino);
 

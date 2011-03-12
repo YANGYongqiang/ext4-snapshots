@@ -47,13 +47,14 @@
 #define CONFIG_EXT4_DEFAULTS_TO_ORDERED
 #define CONFIG_EXT4_FS_XATTR
 #define CONFIG_EXT4_FS_SECURITY
+#define CONFIG_EXT4_DEBUG
 #define CONFIG_EXT4_FS_DEBUG
 #define CONFIG_EXT4_FS_SNAPSHOT
-#define CONFIG_EXT4_FS_SNAPSHOT_EXTENT_FL
 #define CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
 #define CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DELETE
 #define CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 #define CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DIO
+#define CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 #define CONFIG_EXT4_FS_SNAPSHOT_FILE
 #define CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
 #define CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
@@ -442,50 +443,20 @@ struct flex_groups {
 #define EXT4_EA_INODE_FL	        0x00200000 /* Inode used for large EA */
 #define EXT4_EOFBLOCKS_FL		0x00400000 /* Blocks allocated beyond EOF */
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
-#define EXT4_SNAPFILE_LIST_FL		0x00000100 /* snapshot is on list (S) */
-#define EXT4_SNAPFILE_ENABLED_FL	0x00000200 /* snapshot is enabled (n) */
-#define EXT4_SNAPFILE_ACTIVE_FL	0x00000400 /* snapshot is active  (a) */
-#define EXT4_SNAPFILE_INUSE_FL		0x00000800 /* snapshot is in-use  (p) */
 /* snapshot persistent flags */
-#define EXT4_SNAPFILE_FL		0x01000000 /* snapshot file (x) */
-#define EXT4_SNAPFILE_DELETED_FL	0x04000000 /* snapshot is deleted (s) */
-#define EXT4_SNAPFILE_SHRUNK_FL	0x08000000 /* snapshot was shrunk (h) */
-/* more snapshot non-persistent flags */
-#define EXT4_SNAPFILE_OPEN_FL		0x10000000 /* snapshot is mounted (o) */
-#define EXT4_SNAPFILE_TAGGED_FL	0x20000000 /* snapshot is tagged  (t) */
+#define EXT4_SNAPFILE_FL		0x01000000 /* snapshot file */
+#define EXT4_SNAPFILE_DELETED_FL	0x04000000 /* snapshot is deleted */
+#define EXT4_SNAPFILE_SHRUNK_FL		0x08000000 /* snapshot was shrunk */
 /* end of snapshot flags */
 #endif
 #define EXT4_RESERVED_FL		0x80000000 /* reserved for ext4 lib */
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
-/* snapshot flags reserved for user */
-#define EXT4_FL_SNAPSHOT_USER_MASK		\
-	 EXT4_SNAPFILE_TAGGED_FL
-
-/* snapshot flags modifiable by chattr */
-#define EXT4_FL_SNAPSHOT_RW_MASK		\
-	(EXT4_FL_SNAPSHOT_USER_MASK|EXT4_SNAPFILE_FL| \
-	 EXT4_SNAPFILE_LIST_FL|EXT4_SNAPFILE_ENABLED_FL)
-
-/* snapshot persistent read-only flags */
-#define EXT4_FL_SNAPSHOT_RO_MASK		\
-	 (EXT4_SNAPFILE_DELETED_FL|EXT4_SNAPFILE_SHRUNK_FL)
-
-/* non-persistent snapshot status flags */
-#define EXT4_FL_SNAPSHOT_DYN_MASK		\
-	(EXT4_SNAPFILE_LIST_FL|EXT4_SNAPFILE_ENABLED_FL| \
-	 EXT4_SNAPFILE_ACTIVE_FL|EXT4_SNAPFILE_INUSE_FL| \
-	 EXT4_SNAPFILE_OPEN_FL|EXT4_SNAPFILE_TAGGED_FL)
-
-/* snapshot flags visible to lsattr */
-#define EXT4_FL_SNAPSHOT_MASK			\
-	(EXT4_FL_SNAPSHOT_DYN_MASK|EXT4_SNAPFILE_FL| \
-	 EXT4_FL_SNAPSHOT_RO_MASK)
 
 /* User visible flags */
-#define EXT4_FL_USER_VISIBLE	(EXT4_FL_SNAPSHOT_MASK|0x004BDFFF)
+#define EXT4_FL_USER_VISIBLE		0x014BDFFF
 /* User modifiable flags */
-#define EXT4_FL_USER_MODIFIABLE	(EXT4_FL_SNAPSHOT_RW_MASK|0x004B80FF)
+#define EXT4_FL_USER_MODIFIABLE		0x014B80FF
 
 /* Flags that should be inherited by new inodes from their parent. */
 #define EXT4_FL_INHERITED (EXT4_SECRM_FL | EXT4_UNRM_FL | EXT4_COMPR_FL |\
@@ -709,6 +680,10 @@ struct ext4_new_group_data {
  /* note ioctl 10 reserved for an early version of the FIEMAP ioctl */
  /* note ioctl 11 reserved for filesystem-independent FIEMAP ioctl */
 #define EXT4_IOC_ALLOC_DA_BLKS		_IO('f', 12)
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+#define EXT4_IOC_GETSNAPFLAGS		_IOR('f', 13, long)
+#define EXT4_IOC_SETSNAPFLAGS		_IOW('f', 14, long)
+#endif
 #define EXT4_IOC_MOVE_EXT		_IOWR('f', 15, struct move_extent)
 
 #if defined(__KERNEL__) && defined(CONFIG_COMPAT)
@@ -1101,6 +1076,7 @@ struct ext4_inode_info {
 #define EXT4_MOUNT_JOURNAL_CHECKSUM	0x800000 /* Journal checksums */
 #define EXT4_MOUNT_JOURNAL_ASYNC_COMMIT	0x1000000 /* Journal Async Commit */
 #define EXT4_MOUNT_I_VERSION            0x2000000 /* i_version support */
+#define EXT4_MOUNT_MBLK_IO_SUBMIT	0x4000000 /* multi-block io submits */
 #define EXT4_MOUNT_DELALLOC		0x8000000 /* Delalloc support */
 #define EXT4_MOUNT_DATA_ERR_ABORT	0x10000000 /* Abort on file data write */
 #define EXT4_MOUNT_BLOCK_VALIDITY	0x20000000 /* Block validity checking */
@@ -1444,8 +1420,33 @@ enum {
 	EXT4_STATE_EXT_MIGRATE,		/* Inode is migrating */
 	EXT4_STATE_DIO_UNWRITTEN,	/* need convert on dio done*/
 	EXT4_STATE_NEWENTRY,		/* File just added to dir */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#define EXT4_SNAPSTATE_FIRST		EXT4_SNAPSTATE_LIST
+	EXT4_SNAPSTATE_LIST,		/* snapshot is on list (S) */
+	EXT4_SNAPSTATE_ENABLED,		/* snapshot is enabled (n) */
+	EXT4_SNAPSTATE_ACTIVE,		/* snapshot is active  (a) */
+	EXT4_SNAPSTATE_INUSE,		/* snapshot is in-use  (p) */
+	EXT4_SNAPSTATE_DELETED,		/* snapshot is deleted (s) */
+	EXT4_SNAPSTATE_SHRUNK,		/* snapshot was shrunk (h) */
+	EXT4_SNAPSTATE_OPEN,		/* snapshot is mounted (o) */
+	EXT4_SNAPSTATE_TAGGED,		/* snapshot is tagged  (t) */
+#define EXT4_SNAPSTATE_LAST		EXT4_SNAPSTATE_TAGGED
+#endif
 };
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/* macros to convert inode state flags to/from GETSNAPFLAGS ioctl */
+#define EXT4_SNAPSTATE_SHIFT		EXT4_SNAPSTATE_FIRST
+#define EXT4_SNAPFLAGS_MASK		\
+	((1UL << (EXT4_SNAPSTATE_LAST - EXT4_SNAPSTATE_FIRST)) - 1)
+#define EXT4_SNAPSTATE_MASK		\
+	(EXT4_SNAPFLAGS_MASK << EXT4_SNAPSTATE_SHIFT)
+#define EXT4_SNAPSTATE(flags)		\
+	(((flags) & EXT4_SNAPFLAGS_MASK) << EXT4_SNAPSTATE_SHIFT)
+#define EXT4_SNAPFLAGS(state)		\
+	(((state) & EXT4_SNAPSTATE_MASK) >> EXT4_SNAPSTATE_SHIFT)
+
+#endif
 #define EXT4_INODE_BIT_FNS(name, field)					\
 static inline int ext4_test_inode_##name(struct inode *inode, int bit)	\
 {									\
@@ -1947,6 +1948,9 @@ extern void __ext4_free_blocks(const char *where, unsigned int line,
 extern int ext4_mb_add_groupinfo(struct super_block *sb,
 		ext4_group_t i, struct ext4_group_desc *desc);
 extern int ext4_trim_fs(struct super_block *, struct fstrim_range *);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_COW 
+extern int ext4_mb_test_bit_range(int bit, void *addr,int *pcount);
+#endif
 
 /* inode.c */
 struct buffer_head *ext4_getblk(handle_t *, struct inode *,
@@ -1956,6 +1960,8 @@ struct buffer_head *ext4_bread(handle_t *, struct inode *,
 int ext4_get_block(struct inode *inode, sector_t iblock,
 				struct buffer_head *bh_result, int create);
 
+extern blkcnt_t ext4_inode_blocks(struct ext4_inode *raw_inode,
+		struct ext4_inode_info *ei);
 extern struct inode *ext4_iget(struct super_block *, unsigned long);
 extern int  ext4_write_inode(struct inode *, struct writeback_control *);
 extern int  ext4_setattr(struct dentry *, struct iattr *);
@@ -2016,12 +2022,6 @@ extern void ext4_free_branches_cow(handle_t *handle, struct inode *inode,
 				(first), (last), (depth), NULL)
 #endif
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
-/* buffer.c */
-extern void __ext4_trace_bh_count(const char *fn, struct buffer_head *bh);
-
-#define ext4_trace_bh_count(bh) __ext4_trace_bh_count(__func__, (bh))
-#endif
 /* ioctl.c */
 extern long ext4_ioctl(struct file *, unsigned int, unsigned long);
 extern long ext4_compat_ioctl(struct file *, unsigned int, unsigned long);

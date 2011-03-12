@@ -140,7 +140,7 @@ int ext4_snapshot_shrink_blocks(handle_t *handle, struct inode *inode,
 	const char *cow_bitmap;
 
 	BUG_ON(shrink &&
-		(!(EXT4_I(inode)->i_flags & EXT4_SNAPFILE_DELETED_FL) ||
+	       (!(ext4_test_inode_flag(inode, EXT4_INODE_SNAPFILE_DELETED)) ||
 		ext4_snapshot_is_active(inode)));
 
 	depth = ext4_block_to_path(inode, iblock, offsets,
@@ -393,7 +393,7 @@ int ext4_snapshot_merge_blocks(handle_t *handle,
 			       count, kd, depth, moved);
 		/* update src and dst inodes blocks usage */
 		dquot_free_block(src, moved);
-		dquot_alloc_block(dst, moved);
+		dquot_alloc_block_nofail(dst, moved);
 		err = ext4_handle_dirty_metadata(handle, NULL, pD->bh);
 		if (err)
 			goto out;
@@ -447,11 +447,19 @@ out:
  * Proof of no race with snapshot take:
  * ------------------------------------
  * Snapshot B take is composed of the following steps:
+ * ext4_snapshot_create():
  * - Add snapshot B to head of list (active_snapshot is A).
  * - Allocate and copy snapshot B initial blocks.
+ * ext4_snapshot_take():
+ * - Freeze FS
  * - Clear snapshot A 'active' flag.
- * - Set snapshot B 'list' and 'active' flags.
+ * - Set snapshot B 'list'+'active' flags.
  * - Set snapshot B as active snapshot (active_snapshot=B).
+ * - Unfreeze FS
+ *
+ * Note that we do not need to rely on correct order of instructions within
+ * each of the functions above, but we can assume that Freeze FS will provide
+ * a strong barrier between adding B to list and the ops inside snapshot_take.
  *
  * When reading from snapshot A during snapshot B take, we have 2 cases:
  * 1. is_active(A) is tested before setting active_snapshot=B -
@@ -459,12 +467,12 @@ out:
  * 2. is_active(A) is tested after setting active_snapshot=B -
  *    read through from A to B.
  *
- * When reading from snapshot B during snapshot B take, we have 3 cases:
- * 1. B->flags and B->prev are read before adding B to list -
+ * When reading from snapshot B during snapshot B take, we have 2 cases:
+ * 1. B->flags and B->prev are read before adding B to list
+ *    AND/OR before setting the 'list'+'active' flags -
  *    access to B denied.
- * 2. B->flags is read before setting the 'list' and 'active' flags -
- *    normal file access to B.
- * 3. B->flags is read after setting the 'list' and 'active' flags -
+ * 2. is_active(B) is tested after setting active_snapshot=B
+ *    AND/OR after setting the 'list'+'active' flags -
  *    read through from B to block device.
  */
 #endif
@@ -473,31 +481,25 @@ static int ext4_snapshot_get_block_access(struct inode *inode,
 		struct inode **prev_snapshot)
 {
 	struct ext4_inode_info *ei = EXT4_I(inode);
-	unsigned int flags = ei->i_flags;
+	unsigned int flags = ei->i_state_flags;
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
 	struct list_head *prev = ei->i_snaplist.prev;
 #endif
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
-	if (!(flags & EXT4_SNAPFILE_LIST_FL)) 
+	if (!(flags & 1UL<<EXT4_SNAPSTATE_LIST))
 	  	/* snapshot not on the list - read/write access denied */
 		return -EPERM;
-	
 #endif
 
-	/*
-	 * Snapshot image read through access: (!cmd && !handle)
-	 * indicates this is ext4_snapshot_readpage()
-	 * calling ext4_snapshot_get_block()
-	 */
 	*prev_snapshot = NULL;
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
 	if (ext4_snapshot_is_active(inode) ||
-			(flags & EXT4_SNAPFILE_ACTIVE_FL))
+			(flags & 1UL<<EXT4_SNAPSTATE_ACTIVE))
 		/* read through from active snapshot to block device */
 		return 0;
 
-	if (list_empty(prev))
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+	if (prev == &ei->i_snaplist)
 		/* not on snapshots list? */
 		return -EIO;
 
@@ -514,7 +516,8 @@ static int ext4_snapshot_get_block_access(struct inode *inode,
 		return -EIO;
 
 	return 0;
-
+#else
+	return -EPERM;
 #endif
 }
 
@@ -567,9 +570,7 @@ static int ext4_snapshot_get_blockdev_access(struct super_block *sb,
 				bit, block_group);
 		err = -EIO;
 	}
-#endif
-
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_BITMAP
+	
 	brelse(exclude_bitmap_bh);
 #endif
 	brelse(bitmap_bh);
@@ -722,7 +723,15 @@ static int ext4_snapshot_get_block(struct inode *inode, sector_t iblock,
 	if (!buffer_tracked_read(bh_result))
 		return 0;
 
-	/* check for read through to block bitmap */
+	/*
+	 * Check for read through to block bitmap:
+	 * Without flex_bg, the bitmaps are located in their own block group.
+	 * With flex_bg, we need to search all group desc of the flex group.
+	 * The exclude bitmap can potentially be allocated from any group, but
+	 * that would only fail fsck sanity check of snapshots.
+	 * TODO: implement flex_bg check correctly.
+	 */
+#warning fixme: test if a block is a block/exclude bitmap is wrong for flex_bg
 	block_group = SNAPSHOT_BLOCK_GROUP(bh_result->b_blocknr);
 	desc = ext4_get_group_desc(inode->i_sb, block_group, NULL);
 	if (desc)

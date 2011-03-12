@@ -21,7 +21,7 @@
 #include "snapshot_debug.h"
 
 
-#define NEXT3_SNAPSHOT_VERSION "next3 snapshot v1.0.13-rc5 (25-Nov-2010)"
+#define NEXT3_SNAPSHOT_VERSION "next3 snapshot v1.0.13-3 (7-Mar-2010)"
 
 /*
  * use signed 64bit for snapshot image addresses
@@ -31,9 +31,24 @@
 
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34) )
 /* one snapshot patch fits all kernel versions */
+#include <linux/quotaops.h>
+
 #define dquot_file_open generic_file_open
-#define dquot_alloc_block vfs_dq_alloc_block
-#define dquot_free_block vfs_dq_free_block
+
+static inline int dquot_alloc_block(struct inode *inode, qsize_t nr)
+{
+        return vfs_dq_alloc_block(inode, nr) ? -EDQUOT : 0;
+}
+
+static inline void dquot_alloc_block_nofail(struct inode *inode, qsize_t nr)
+{
+        vfs_dq_alloc_block(inode, nr);
+}
+
+static inline void dquot_free_block(struct inode *inode, qsize_t nr)
+{
+        vfs_dq_free_block(inode, nr);
+}
 #endif
 
 /*
@@ -82,7 +97,7 @@
 	(SNAPSHOT_BLOCK_OFFSET << SNAPSHOT_BLOCK_SIZE_BITS)
 #define SNAPSHOT_ISIZE(size)			\
 	((size) + SNAPSHOT_BYTES_OFFSET)
-
+/* Snapshot block device size is recorded in i_disksize */
 #define SNAPSHOT_SET_SIZE(inode, size)				\
 	(NEXT3_I(inode)->i_disksize = SNAPSHOT_ISIZE(size))
 #define SNAPSHOT_SIZE(inode)					\
@@ -92,10 +107,39 @@
 			(loff_t)(blocks) << SNAPSHOT_BLOCK_SIZE_BITS)
 #define SNAPSHOT_BLOCKS(inode)					\
 	(next3_fsblk_t)(SNAPSHOT_SIZE(inode) >> SNAPSHOT_BLOCK_SIZE_BITS)
+/* Snapshot shrink/merge/clean progress is exported via i_size */
+#define SNAPSHOT_PROGRESS(inode)				\
+	(next3_fsblk_t)((inode)->i_size >> SNAPSHOT_BLOCK_SIZE_BITS)
 #define SNAPSHOT_SET_ENABLED(inode)				\
 	i_size_write((inode), SNAPSHOT_SIZE(inode))
-#define SNAPSHOT_SET_DISABLED(inode)		\
-	i_size_write((inode), 0)
+#define SNAPSHOT_SET_PROGRESS(inode, blocks)			\
+	snapshot_size_extend((inode), (blocks))
+/* Disabled/deleted snapshot i_size is 1 block, to allow read of super block */
+#define SNAPSHOT_SET_DISABLED(inode)				\
+	snapshot_size_truncate((inode), 1)
+/* Removed snapshot i_size and i_disksize are 0, since all blocks were freed */
+#define SNAPSHOT_SET_REMOVED(inode)				\
+	NEXT3_I(inode)->i_disksize = 0;				\
+	snapshot_size_truncate((inode), 0)
+
+static inline void snapshot_size_extend(struct inode *inode, next3_fsblk_t blocks)
+{
+	next3_fsblk_t old_blocks = SNAPSHOT_PROGRESS(inode);
+	next3_fsblk_t max_blocks = SNAPSHOT_BLOCKS(inode);
+
+	/* sleep total of tunable delay unit over 100% progress */
+	snapshot_test_delay_progress(SNAPTEST_DELETE,
+			old_blocks, blocks, max_blocks);
+	i_size_write((inode), (loff_t)(blocks) << SNAPSHOT_BLOCK_SIZE_BITS);
+}
+
+static inline void snapshot_size_truncate(struct inode *inode, next3_fsblk_t blocks)
+{
+	loff_t i_size = (loff_t)blocks << SNAPSHOT_BLOCK_SIZE_BITS;
+
+	i_size_write(inode, i_size);
+	truncate_inode_pages(&inode->i_data, i_size);
+}
 
 #ifdef CONFIG_NEXT3_FS_SNAPSHOT_HOOKS_DATA
 enum next3_bh_state_bits {
@@ -585,7 +629,6 @@ static inline void next3_snapshot_end_pending_cow(struct buffer_head *sbh)
 static inline void next3_snapshot_test_pending_cow(struct buffer_head *sbh,
 						sector_t blocknr)
 {
-	SNAPSHOT_DEBUG_ONCE;
 	while (buffer_new(sbh)) {
 		/* wait for pending COW to complete */
 		snapshot_debug_once(2, "waiting for pending cow: "
@@ -639,6 +682,50 @@ static inline int buffer_tracked_readers_count(struct buffer_head *bdev_bh)
 extern int start_buffer_tracked_read(struct buffer_head *bh);
 extern void cancel_buffer_tracked_read(struct buffer_head *bh);
 extern int next3_read_full_page(struct page *page, get_block_t *get_block);
-#endif
 
+#ifdef CONFIG_NEXT3_FS_DEBUG
+extern void __next3_trace_bh_count(const char *fn, struct buffer_head *bh);
+
+#define next3_trace_bh_count(bh) __next3_trace_bh_count(__func__, bh)
+#define sb_bread(sb, blk) next3_sb_bread(__func__, sb, blk)
+#define sb_getblk(sb, blk) next3_sb_getblk(__func__, sb, blk)
+#define sb_find_get_block(sb, blk) next3_sb_find_get_block(__func__, sb, blk)
+
+static inline struct buffer_head *
+next3_sb_bread(const char *fn, struct super_block *sb, sector_t block)
+{
+	struct buffer_head *bh;
+	
+	bh = __bread(sb->s_bdev, block, sb->s_blocksize);
+	if (bh)
+		__next3_trace_bh_count(fn, bh);
+	return bh;
+}
+
+static inline struct buffer_head *
+next3_sb_getblk(const char *fn, struct super_block *sb, sector_t block)
+{
+	struct buffer_head *bh;
+	
+	bh = __getblk(sb->s_bdev, block, sb->s_blocksize);
+	if (bh)
+		__next3_trace_bh_count(fn, bh);
+	return bh;
+}
+
+static inline struct buffer_head *
+next3_sb_find_get_block(const char *fn, struct super_block *sb, sector_t block)
+{
+	struct buffer_head *bh;
+
+	bh = __find_get_block(sb->s_bdev, block, sb->s_blocksize);
+	if (bh)
+		__next3_trace_bh_count(fn, bh);
+	return bh;
+}
+
+#else
+#define next3_trace_bh_count(bh)
+#endif
+#endif
 #endif	/* _LINUX_NEXT3_SNAPSHOT_H */

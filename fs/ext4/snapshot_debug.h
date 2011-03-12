@@ -41,11 +41,16 @@ extern u8 cow_cache_offset;
 			msleep_interruptible(snapshot_enable_test[i]); \
 	} while (0)
 
-#define snapshot_test_delay_per_ticks(i, n)	    \
+/* sleep 1/100 from total delay every 1% of progress (max = 100%) */
+#define snapshot_test_delay_progress(i, from, to, max)			\
 	do {								\
-		if (snapshot_enable_test[i] && (n))			\
-			msleep_interruptible(				\
-				(snapshot_enable_test[i]/(n))+1);	\
+		if (snapshot_enable_test[i] && (max)) {			\
+			unsigned long x = 100UL*(from)/(max);		\
+			unsigned long y = 100UL*(to)/(max);		\
+			long msec = (y - x)*snapshot_enable_test[i]/100;\
+			if (msec > 0)					\
+				msleep_interruptible(msec);		\
+		}							\
 	} while (0)
 
 #define snapshot_debug_l(n, l, f, a...)					\
@@ -61,37 +66,26 @@ extern u8 cow_cache_offset;
 
 #define snapshot_debug(n, f, a...)	snapshot_debug_l(n, 0, f, ## a)
 
-#define SNAPSHOT_DEBUG_ONCE int once = 1
 #define snapshot_debug_once(n, f, a...)					\
 	do {								\
-		if (once) {						\
+		static bool __once = false;				\
+		if (__once) {						\
 			snapshot_debug(n, f, ## a);			\
-			once = 0;					\
+			__once = true;					\
 		}							\
 	} while (0)
 
-void ext4_snapshot_create_debugfs_entry(void);
-void ext4_snapshot_remove_debugfs_entry(void);
-
-static inline void init_ext4_snapshot_debug(void)
-{
-	ext4_snapshot_create_debugfs_entry();
-}
-
-static inline void exit_ext4_snapshot_debug(void)
-{
-	ext4_snapshot_remove_debugfs_entry();
-}
+extern void ext4_snapshot_create_debugfs_entry(struct dentry *debugfs_dir);
+extern void ext4_snapshot_remove_debugfs_entry(void);
 
 #else
 #define snapshot_test_delay(i)
-#define snapshot_test_delay_per_ticks(i, n)
+#define snapshot_test_delay_progress(i, from, to, max)
 #define snapshot_debug(n, f, a...)
 #define snapshot_debug_l(n, l, f, a...)
 #define snapshot_debug_once(n, f, a...)
-#define SNAPSHOT_DEBUG_ONCE
-#define init_ext4_snapshot_debug()
-#define exit_ext4_snapshot_debug()
+#define ext4_snapshot_create_debugfs_entry(d)
+#define ext4_snapshot_remove_debugfs_entry()
 #endif
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_DUMP

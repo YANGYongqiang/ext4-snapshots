@@ -1059,7 +1059,7 @@ got:
 		goto fail_free_drop;
 
 	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_EXTENTS)) {
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXTENT_FL
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 		/*
 		 * Set extent flag only for non-snapshot file, directory
 		 * and normal symlink

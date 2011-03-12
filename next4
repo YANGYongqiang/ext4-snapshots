@@ -7,7 +7,7 @@
 #
 
 SCRIPT_NAME=$(basename $0)
-SCRIPT_VER=1.0.13
+SCRIPT_VER=1.0.13-5
 SCRIPT_DESC="Next4 snapshot management script"
 # fs/module name = script name
 MNTTYPE=$SCRIPT_NAME
@@ -16,8 +16,9 @@ MNTTYPE=$SCRIPT_NAME
 FSCK=e2fsck
 MKFS=mke2fs
 TUNEFS=tune2fs
-LSSNAP=lsattr
-CHSNAP=chattr
+LSSNAP="lssnap"
+CHSNAP="chsnap"
+CHATTR=chattr
 
 # override generic e2fs progs with installed e2fs.next3 progs in /sbin fodler
 # and override those with private built e2fs.next3 progs in ./bin folder
@@ -25,17 +26,26 @@ for dir in /sbin ./bin ; do
 if [ -f $dir/fsck.next3 ] ; then
 	FSCK=$dir/fsck.next3
 fi
-if [ -f $dir/mkfs.next3 ] ; then
+if [ -f $dir/mkfs.next4 ] ; then
+	MKFS=$dir/mkfs.next4
+elif [ -f $dir/mkfs.next3 ] ; then
 	MKFS=$dir/mkfs.next3
 fi
 if [ -f $dir/tunefs.next3 ] ; then
 	TUNEFS=$dir/tunefs.next3
 fi
-if [ -f $dir/lsattr.next3 ] ; then
-	LSSNAP=$dir/lsattr.next3
+if [ -f $dir/lssnap ] ; then
+	LSSNAP=$dir/lssnap
+elif [ -f $dir/lsattr.next3 ] ; then
+	LSSNAP="$dir/lsattr.next3 -X"
+fi
+if [ -f $dir/chsnap ] ; then
+	CHSNAP=$dir/chsnap
+elif [ -f $dir/chattr.next3 ] ; then
+	CHSNAP="$dir/chattr.next3 -X"
 fi
 if [ -f $dir/chattr.next3 ] ; then
-	CHSNAP=$dir/chattr.next3
+	CHATTR=$dir/chattr.next3
 fi
 done 
 
@@ -268,9 +278,7 @@ case "$1" in
 		exit 0
 	fi
 	$MKFS -b 4096 -j -J big -O has_snapshot,exclude_inode $NEXT4DEV || exit 1
-	#uncomment the following line to disable ext4 features.
-	TUNEOPT="-O extents,uninit_bg,dir_index"
-	$TUNEFS $TUNEOPT -e remount-ro $NEXT4DEV
+	$TUNEFS -e remount-ro $NEXT4DEV
 	echo next4 filesystem created on $NEXT4DEV
 	echo .
 	;;
@@ -290,7 +298,7 @@ case "$1" in
 	echo "id inode attributes disk-usage mtime filename"
 	echo "---------------------------------------------"
 	for s in $( ls -vr $SNAPDIR/* ) ; do
-		( echo "$( $LSSNAP -v -X $s ) " ; \
+		( echo "$( $LSSNAP -v $s ) " ; \
 			echo "$( du -h $s ) " ; \
 			echo "$( ls -lih --color=never $s ) " ) | \
 		( read id attr a ; read du b ; read ino c d e f g mm dd tt fname h ; \
@@ -304,7 +312,7 @@ case "$1" in
 		echo "usage: $0 $1"
 		exit 0
 	fi
-	$LSSNAP -Xl $SNAPDIR
+	$LSSNAP -l $SNAPDIR
 	;;
 
 # Snapshot control commands (single snapshot)
@@ -315,7 +323,7 @@ case "$1" in
 		exit 0
 	fi
 	mkdir -p $SNAPDIR || exit 1
-	$CHSNAP +x $SNAPDIR || exit 1
+	$CHATTR +dx $SNAPDIR || exit 1
 	if [ -z $s ] ; then
 		# default snapshot-name is the <date-time> in shadow copy format
 		s=$( date -u +GMT-%Y.%m.%d-%H.%M.%S )
@@ -327,7 +335,7 @@ case "$1" in
 	fi
 	touch $SNAPDIR/$s 2> /dev/null
 	sync
-	$CHSNAP -X +S $SNAPDIR/$s || exit 1
+	$CHSNAP +S $SNAPDIR/$s || exit 1
 	echo snapshot $S was created
 	echo .
 	;;
@@ -345,7 +353,7 @@ case "$1" in
 	fi
 	if [ -f $SNAPDIR/$s ] ; then
 		$0 umount $s
-		$CHSNAP -X -S $SNAPDIR/$s || exit 1
+		$CHSNAP -S $SNAPDIR/$s || exit 1
 	fi
 	echo snapshot $S is deleted
 	echo .
@@ -383,7 +391,7 @@ case "$1" in
 		echo "$0 enable: snapshot $S not found!"
 		exit 1
   	fi
-	$CHSNAP -X +n $SNAPDIR/$s || exit 1
+	$CHSNAP +n $SNAPDIR/$s || exit 1
 	;;
   disable)
 	if [ $1_$2 = $1_help ] ; then
@@ -403,7 +411,7 @@ case "$1" in
 		echo "$0 disable: snapshot $S is mounted!"
 		exit 1
 	fi
-	$CHSNAP -X -n $SNAPDIR/$s || exit 1
+	$CHSNAP -n $SNAPDIR/$s || exit 1
 	;;
 
 # Snapshot control commands (single or all snapshots)
@@ -479,7 +487,7 @@ case "$1" in
 		echo "$0 dump: snapshot $S not found!"
 		exit 1
 	fi
-	chattr -d $SNAPDIR/$s
+	$CHATTR -d $SNAPDIR/$s
 	echo "map of snapshot $S was printed to kernel ring buffer."
 	echo "use dmesg to display kernel ring buffer."
 	echo .
@@ -523,7 +531,7 @@ case "$1" in
 	echo camel > $NEXT4MNT/C/c.txt
 	# create non-snapshot dir in snapshots dir block group
 	mkdir -p $NEXT4MNT/$TESTDIR
-	$CHSNAP -x $NEXT4MNT/$TESTDIR || exit 1
+	$CHATTR -x $NEXT4MNT/$TESTDIR || exit 1
 	;;
   rmtest)
 	rm -rf $NEXT4MNT/? 2> /dev/null

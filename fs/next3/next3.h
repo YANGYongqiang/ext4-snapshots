@@ -1110,6 +1110,10 @@ int next3_get_blocks_handle(handle_t *handle, struct inode *inode,
 	sector_t iblock, unsigned long maxblocks, struct buffer_head *bh_result,
 	int create);
 
+#ifdef CONFIG_NEXT3_FS_SNAPSHOT_FILE_HUGE
+extern blkcnt_t next3_inode_blocks(struct next3_inode *raw_inode,
+		struct next3_inode_info *ei);
+#endif
 extern struct inode *next3_iget(struct super_block *, unsigned long);
 extern int  next3_write_inode (struct inode *, struct writeback_control *);
 extern int  next3_setattr (struct dentry *, struct iattr *);

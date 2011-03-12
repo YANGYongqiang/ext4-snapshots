@@ -21,7 +21,7 @@
 #include "snapshot_debug.h"
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT
-#define EXT4_SNAPSHOT_VERSION "ext4 snapshot v1.0.13-rc5 (27-Feb-2010)"
+#define EXT4_SNAPSHOT_VERSION "ext4 snapshot v1.0.13-5 (11-Mar-2010)"
 
 /*
  * use signed 64bit for snapshot image addresses
@@ -29,21 +29,17 @@
  */
 #define ext4_snapblk_t long long
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 34))
-/* one snapshot patch fits all kernel versions */
-#define dquot_file_open generic_file_open
-#define dquot_alloc_block vfs_dq_alloc_block
-#define dquot_free_block vfs_dq_free_block
-#endif
-
 /*
- * We assert that snapshot must use a file system with block size == page
- * size (4K) and that the first file system block is block 0.
+ * We assert that file system block size == page size (on mount time)
+ * and that the first file system block is block 0 (on snapshot create).
  * Snapshot inode direct blocks are reserved for snapshot meta blocks.
  * Snapshot inode single indirect blocks are not used.
- * Snapshot image starts at the first double indirect block.
- * This way, a snapshot image block group can be mapped with 1 double
- * indirect block + 32 indirect blocks.
+ * Snapshot image starts at the first double indirect block, so all blocks in
+ * a snapshot image block group are mapped by the same double indirect block:
+ * 4k: 32k blocks_per_group = 32 IND (4k) blocks = 32 groups per DIND
+ * 8k: 64k blocks_per_group = 32 IND (8k) blocks = 64 groups per DIND
+ * 16k: 128k blocks_per_group = 32 IND (16k) blocks = 128 groups per DIND
+ * TODO: correct macros for PAGE_SIZE != 4k
  */
 #define SNAPSHOT_BLOCK_SIZE		PAGE_SIZE
 #define SNAPSHOT_BLOCK_SIZE_BITS	PAGE_SHIFT
@@ -82,7 +78,7 @@
 	(SNAPSHOT_BLOCK_OFFSET << SNAPSHOT_BLOCK_SIZE_BITS)
 #define SNAPSHOT_ISIZE(size)			\
 	((size) + SNAPSHOT_BYTES_OFFSET)
-
+/* Snapshot block device size is recorded in i_disksize */
 #define SNAPSHOT_SET_SIZE(inode, size)				\
 	(EXT4_I(inode)->i_disksize = SNAPSHOT_ISIZE(size))
 #define SNAPSHOT_SIZE(inode)					\
@@ -92,10 +88,41 @@
 			(loff_t)(blocks) << SNAPSHOT_BLOCK_SIZE_BITS)
 #define SNAPSHOT_BLOCKS(inode)					\
 	(ext4_fsblk_t)(SNAPSHOT_SIZE(inode) >> SNAPSHOT_BLOCK_SIZE_BITS)
+/* Snapshot shrink/merge/clean progress is exported via i_size */
+#define SNAPSHOT_PROGRESS(inode)				\
+	(ext4_fsblk_t)((inode)->i_size >> SNAPSHOT_BLOCK_SIZE_BITS)
 #define SNAPSHOT_SET_ENABLED(inode)				\
 	i_size_write((inode), SNAPSHOT_SIZE(inode))
-#define SNAPSHOT_SET_DISABLED(inode)		\
-	i_size_write((inode), 0)
+#define SNAPSHOT_SET_PROGRESS(inode, blocks)			\
+	snapshot_size_extend((inode), (blocks))
+/* Disabled/deleted snapshot i_size is 1 block, to allow read of super block */
+#define SNAPSHOT_SET_DISABLED(inode)				\
+	snapshot_size_truncate((inode), 1)
+/* Removed snapshot i_size and i_disksize are 0, since all blocks were freed */
+#define SNAPSHOT_SET_REMOVED(inode)				\
+	EXT4_I(inode)->i_disksize = 0;				\
+	snapshot_size_truncate((inode), 0)
+
+static inline void snapshot_size_extend(struct inode *inode, ext4_fsblk_t blocks)
+{
+#ifdef CONFIG_EXT4_FS_DEBUG
+	ext4_fsblk_t old_blocks = SNAPSHOT_PROGRESS(inode);
+	ext4_fsblk_t max_blocks = SNAPSHOT_BLOCKS(inode);
+
+	/* sleep total of tunable delay unit over 100% progress */
+	snapshot_test_delay_progress(SNAPTEST_DELETE,
+			old_blocks, blocks, max_blocks);
+#endif
+	i_size_write((inode), (loff_t)(blocks) << SNAPSHOT_BLOCK_SIZE_BITS);
+}
+
+static inline void snapshot_size_truncate(struct inode *inode, ext4_fsblk_t blocks)
+{
+	loff_t i_size = (loff_t)blocks << SNAPSHOT_BLOCK_SIZE_BITS;
+
+	i_size_write(inode, i_size);
+	truncate_inode_pages(&inode->i_data, i_size);
+}
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
 /*
@@ -128,6 +155,8 @@
 #define SNAPMAP_ISCOW(cmd)	((cmd) & SNAPMAP_COW_BIT)
 #define SNAPMAP_ISMOVE(cmd)	((cmd) & SNAPMAP_MOVE_BIT)
 #define SNAPMAP_ISSYNC(cmd)	((cmd) & SNAPMAP_SYNC_BIT)
+
+/* snapshot.c */
 
 /* helper functions for ext4_snapshot_create() */
 extern int ext4_snapshot_map_blocks(handle_t *handle, struct inode *inode,
@@ -162,17 +191,17 @@ extern int ext4_snapshot_test_and_cow(const char *where,
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
 extern int ext4_snapshot_test_and_move(const char *where,
 		handle_t *handle, struct inode *inode,
-		ext4_fsblk_t block, int maxblocks, int move);
+		ext4_fsblk_t block, int *maxblocks, int move);
 
 /*
  * test if blocks should be moved to snapshot
  * and if they should, try to move them to the active snapshot
  */
-#define ext4_snapshot_move(handle, inode, block, num, move)	\
+#define ext4_snapshot_move(handle, inode, block, pcount, move)	\
 	ext4_snapshot_test_and_move(__func__, handle, inode,	\
-			block, num, move)
+			block, pcount, move)
 #else
-#define ext4_snapshot_move(handle, inode, block, num, move) (num)
+#define ext4_snapshot_move(handle, inode, block, pcount, move) (0)
 #endif
 
 /*
@@ -197,9 +226,8 @@ static inline int ext4_snapshot_get_write_access(handle_t *handle,
 
 /*
  * called from ext4_journal_get_undo_access(),
- * which is called for group bitmap block from:
- * 1. ext4_free_blocks_sb_inode() before deleting blocks
- * 2. ext4_new_blocks() before allocating blocks
+ * which is called for group bitmap block from
+ * ext4_add_groupblocks() before adding blocks to existing group.
  *
  * Return values:
  * = 0 - block was COWed or doesn't need to be COWed
@@ -208,15 +236,7 @@ static inline int ext4_snapshot_get_write_access(handle_t *handle,
 static inline int ext4_snapshot_get_undo_access(handle_t *handle,
 		struct buffer_head *bh)
 {
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_BITMAP
-	/*
-	 * undo access is only requested for block bitmaps, which should be
-	 * COWed in ext4_snapshot_test_cow_bitmap(), even if we pass @cow=0.
-	 */
-	return ext4_snapshot_cow(handle, NULL, bh, 0);
-#else
 	return ext4_snapshot_cow(handle, NULL, bh, 1);
-#endif
 }
 
 /*
@@ -245,47 +265,49 @@ static inline int ext4_snapshot_get_create_access(handle_t *handle,
  * @handle:	JBD handle
  * @inode:	owner of @block
  * @block:	address of @block
- * @move:	if false, only test if @block needs to be moved
+ * @pcount      pointer to no. of blocks about to move or approve
+ * @move:	if false, only test if blocks need to be moved
  *
- * Called from ext4_get_blocks_handle() before overwriting a data block,
- * when buffer_move() is true.  Specifically, only data blocks of regular files,
- * whose data is not being journaled are moved on full page write.
- * Journaled data blocks are COWed on get_write_access().
+ * Called from ext4_ind_map_blocks() before overwriting a data block, when the
+ * buffer_move_on_write() flag is set.  Specifically, only data blocks of
+ * regular files are moved. Directory blocks are COWed on get_write_access().
  * Snapshots and excluded files blocks are never moved-on-write.
- * If @move is true, then truncate_mutex is held.
+ * If @move is true, then down_write(&i_data_sem) is held.
  *
  * Return values:
  * = 1 - @block was moved or may not be overwritten
- * = 0 - @block may be overwritten
+ * = 0 - blocks may be overwritten
  * < 0 - error
  */
 static inline int ext4_snapshot_get_move_access(handle_t *handle,
-		struct inode *inode, ext4_fsblk_t block, int move)
+						struct inode *inode, 
+						ext4_fsblk_t block, 
+						int *pcount, int move)
 {
-	return ext4_snapshot_move(handle, inode, block, 1, move);
+	return ext4_snapshot_move(handle, inode, block, pcount, move);
 }
 
 #endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DELETE
 /*
- * get_delete_access() - move count blocks to snapshot
+ * get_delete_access() - move blocks to snapshot or approve to free them
  * @handle:	JBD handle
  * @inode:	owner of blocks
  * @block:	address of start @block
- * @count:	no. of blocks to move
+ * @pcount:	pointer to no. of blocks about to move or approve
  *
- * Called from ext4_free_blocks_sb_inode() before deleting blocks with
+ * Called from ext4_free_blocks() before deleting blocks with
  * truncate_mutex held
  *
  * Return values:
- * > 0 - no. of blocks that were moved to snapshot and may not be deleted
- * = 0 - @block may be deleted
+ * > 0 - blocks were moved to snapshot and may not be freed
+ * = 0 - blocks may be freed
  * < 0 - error
  */
 static inline int ext4_snapshot_get_delete_access(handle_t *handle,
-		struct inode *inode, ext4_fsblk_t block, int count)
+		struct inode *inode, ext4_fsblk_t block, int *pcount)
 {
-	return ext4_snapshot_move(handle, inode, block, count, 1);
+	return ext4_snapshot_move(handle, inode, block, pcount, 1);
 }
 #endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_BITMAP
@@ -319,15 +341,20 @@ extern int ext4_snapshot_test_and_exclude(const char *where, handle_t *handle,
 
 #endif
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
-extern int ext4_snapshot_get_inode_access(handle_t *handle,
-					   struct inode *inode,
-					   ext4_fsblk_t iblock,
-					   int count, int cmd,
-					   struct inode **prev_snapshot);
-#endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
 extern void init_ext4_snapshot_cow_cache(void);
+#endif
+
+/* snapshot_ctl.c */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+
+/*
+ * Snapshot control functions
+ */
+extern void ext4_snapshot_get_flags(struct inode *inode, struct file *filp);
+extern int ext4_snapshot_set_flags(handle_t *handle, struct inode *inode,
+				    unsigned int flags);
+extern int ext4_snapshot_take(struct inode *inode);
 #endif
 
 /*
@@ -341,7 +368,6 @@ extern void ext4_snapshot_destroy(struct super_block *sb);
 
 static inline int init_ext4_snapshot(void)
 {
-	init_ext4_snapshot_debug();
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
 	init_ext4_snapshot_cow_cache();
 #endif
@@ -350,11 +376,10 @@ static inline int init_ext4_snapshot(void)
 
 static inline void exit_ext4_snapshot(void)
 {
-	exit_ext4_snapshot_debug();
 }
 
-/* inode.c */
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP_SHRINK
+/* snapshot_inode.c */
 extern int ext4_snapshot_shrink_blocks(handle_t *handle, struct inode *inode,
 		sector_t iblock, unsigned long maxblocks,
 		struct buffer_head *cow_bh,
@@ -366,7 +391,6 @@ extern int ext4_snapshot_merge_blocks(handle_t *handle,
 		sector_t iblock, unsigned long maxblocks);
 #endif
 
-/* super.c */
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 /* tests if @inode is a snapshot file */
 static inline int ext4_snapshot_file(struct inode *inode)
@@ -374,13 +398,13 @@ static inline int ext4_snapshot_file(struct inode *inode)
 	if (!S_ISREG(inode->i_mode))
 		/* a snapshots directory */
 		return 0;
-	return EXT4_I(inode)->i_flags & EXT4_SNAPFILE_FL;
+	return ext4_test_inode_flag(inode, EXT4_INODE_SNAPFILE);
 }
 
 /* tests if @inode is on the on-disk snapshot list */
 static inline int ext4_snapshot_list(struct inode *inode)
 {
-	return EXT4_I(inode)->i_flags & EXT4_SNAPFILE_LIST_FL;
+	return ext4_test_inode_state(inode, EXT4_SNAPSTATE_LIST);
 }
 #endif
 
@@ -438,7 +462,7 @@ static inline int ext4_snapshot_should_move_data(struct inode *inode)
 	if (ext4_snapshot_excluded(inode))
 		return 0;
 #endif
-#ifndef CONFIG_EXT4_FS_SNAPSHOT_EXTENT_FL
+#ifndef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
 		return 0;
 #endif
@@ -450,6 +474,14 @@ static inline int ext4_snapshot_should_move_data(struct inode *inode)
 
 #endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/* tests if the file system has an active snapshot */
+static inline int ext4_snapshot_active(struct ext4_sb_info *sbi)
+{
+	if (unlikely((sbi)->s_active_snapshot))
+		return 1;
+	return 0;
+}
+
 /*
  * tests if the file system has an active snapshot and returns its inode.
  * active snapshot is only changed under journal_lock_updates(),
@@ -513,7 +545,6 @@ static inline void ext4_snapshot_end_pending_cow(struct buffer_head *sbh)
 static inline void ext4_snapshot_test_pending_cow(struct buffer_head *sbh,
 						sector_t blocknr)
 {
-	SNAPSHOT_DEBUG_ONCE;
 	while (buffer_new(sbh)) {
 		/* wait for pending COW to complete */
 		snapshot_debug_once(2, "waiting for pending cow: "
@@ -563,19 +594,55 @@ static inline int buffer_tracked_readers_count(struct buffer_head *bdev_bh)
 	return atomic_read(&bdev_bh->b_count)>>BH_TRACKED_READERS_COUNT_SHIFT;
 }
 
+/* buffer.c */
 extern int start_buffer_tracked_read(struct buffer_head *bh);
 extern void cancel_buffer_tracked_read(struct buffer_head *bh);
 extern int ext4_read_full_page(struct page *page, get_block_t *get_block);
+
+#ifdef CONFIG_EXT4_FS_DEBUG
+extern void __ext4_trace_bh_count(const char *fn, struct buffer_head *bh);
+
+#define ext4_trace_bh_count(bh) __ext4_trace_bh_count(__func__, bh)
+#define sb_bread(sb, blk) ext4_sb_bread(__func__, sb, blk)
+#define sb_getblk(sb, blk) ext4_sb_getblk(__func__, sb, blk)
+#define sb_find_get_block(sb, blk) ext4_sb_find_get_block(__func__, sb, blk)
+
+static inline struct buffer_head *
+ext4_sb_bread(const char *fn, struct super_block *sb, sector_t block)
+{
+	struct buffer_head *bh;
+	
+	bh = __bread(sb->s_bdev, block, sb->s_blocksize);
+	if (bh)
+		__ext4_trace_bh_count(fn, bh);
+	return bh;
+}
+
+static inline struct buffer_head *
+ext4_sb_getblk(const char *fn, struct super_block *sb, sector_t block)
+{
+	struct buffer_head *bh;
+	
+	bh = __getblk(sb->s_bdev, block, sb->s_blocksize);
+	if (bh)
+		__ext4_trace_bh_count(fn, bh);
+	return bh;
+}
+
+static inline struct buffer_head *
+ext4_sb_find_get_block(const char *fn, struct super_block *sb, sector_t block)
+{
+	struct buffer_head *bh;
+
+	bh = __find_get_block(sb->s_bdev, block, sb->s_blocksize);
+	if (bh)
+		__ext4_trace_bh_count(fn, bh);
+	return bh;
+}
+
+#else
+#define ext4_trace_bh_count(bh)
 #endif
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
-/*
- * Snapshot control functions
- */
-extern void ext4_snapshot_get_flags(struct ext4_inode_info *ei,
-				     struct file *filp);
-extern int ext4_snapshot_set_flags(handle_t *handle, struct inode *inode,
-				    unsigned int flags);
-extern int ext4_snapshot_take(struct inode *inode);
 
 #endif
 #else /* CONFIG_EXT4_FS_SNAPSHOT */

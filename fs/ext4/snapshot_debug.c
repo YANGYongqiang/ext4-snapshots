@@ -50,7 +50,6 @@ u8 snapshot_enable_debug __read_mostly = 1;
 u8 cow_cache_offset __read_mostly = 0;
 #endif
 
-static struct dentry *ext4_debugfs_dir;
 static struct dentry *snapshot_debug;
 static struct dentry *snapshot_version;
 static struct dentry *snapshot_test[SNAPSHOT_TESTS_NUM];
@@ -66,44 +65,40 @@ static struct debugfs_blob_wrapper snapshot_version_blob = {
 
 
 /*
- * ext4_snapshot_create_debugfs_entry - register ext4 debug hooks
+ * ext4_snapshot_create_debugfs_entry - register ext4 snapshot debug hooks
  * Void function doesn't return error if debug hooks are not registered.
  */
-void ext4_snapshot_create_debugfs_entry(void)
+void ext4_snapshot_create_debugfs_entry(struct dentry *debugfs_dir)
 {
 	int i;
 
-	ext4_debugfs_dir = debugfs_create_dir("ext4", NULL);
-	if (!ext4_debugfs_dir)
-		return;
+	BUG_ON(!debugfs_dir);
 	snapshot_debug = debugfs_create_u8("snapshot-debug", S_IRUGO|S_IWUSR,
-					   ext4_debugfs_dir,
+					   debugfs_dir,
 					   &snapshot_enable_debug);
 	snapshot_version = debugfs_create_blob("snapshot-version", S_IRUGO,
-					       ext4_debugfs_dir,
+					       debugfs_dir,
 					       &snapshot_version_blob);
 	for (i = 0; i < SNAPSHOT_TESTS_NUM && i < SNAPSHOT_TEST_NAMES; i++)
 		snapshot_test[i] = debugfs_create_u16(snapshot_test_names[i],
 					      S_IRUGO|S_IWUSR,
-					      ext4_debugfs_dir,
+					      debugfs_dir,
 					      &snapshot_enable_test[i]);
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
 	cow_cache = debugfs_create_u8("cow-cache", S_IRUGO,
-					   ext4_debugfs_dir,
+					   debugfs_dir,
 					   &cow_cache_offset);
 #endif
 }
 
 /*
- * ext4_snapshot_remove_debugfs_entry - unregister ext4 debug hooks
+ * ext4_snapshot_remove_debugfs_entry - unregister ext4 snapshot debug hooks
  * checks if the hooks have been registered before unregistering them.
  */
 void ext4_snapshot_remove_debugfs_entry(void)
 {
 	int i;
 
-	if (!ext4_debugfs_dir)
-		return;
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
 	if (cow_cache)
 		debugfs_remove(cow_cache);
@@ -115,7 +110,6 @@ void ext4_snapshot_remove_debugfs_entry(void)
 		debugfs_remove(snapshot_version);
 	if (snapshot_debug)
 		debugfs_remove(snapshot_debug);
-	debugfs_remove(ext4_debugfs_dir);
 }
 
 
@@ -150,9 +144,8 @@ static struct buffer_head *ext4_snapshot_read_array(int n, int l,
 {
 	struct buffer_head *bh;
 
-	snapshot_debug_l(n, l, "%s[%d] = [%u/%u]\n", name, idx,
-			SNAPSHOT_BLOCK_GROUP_OFFSET(nr),
-			SNAPSHOT_BLOCK_GROUP(nr));
+	snapshot_debug_l(n, l, "%s[%d] = [%lld/%lld]\n", name, idx,
+			SNAPSHOT_BLOCK_TUPLE(nr));
 	di->nind++;
 
 	bh = sb_bread(di->di_inode->i_sb, nr);
@@ -225,10 +218,9 @@ static void ext4_snapshot_dump_ind(int n, int l,
 			} else {
 				/* print copied block */
 				snapshot_debug_l(n, l+1, "block[%u/%u]"
-					" = [%u/%u]\n",
+					" = [%lld/%lld]\n",
 					blk-1-b0, grp,
-					SNAPSHOT_BLOCK_GROUP_OFFSET(prev_key),
-					SNAPSHOT_BLOCK_GROUP(prev_key));
+					SNAPSHOT_BLOCK_TUPLE(prev_key));
 				di->ncopied++;
 			}
 			continue;
@@ -244,11 +236,10 @@ static void ext4_snapshot_dump_ind(int n, int l,
 		} else {
 			/* print group of subsequent copied blocks */
 			snapshot_debug_l(n, l+1, "block[%u-%u/%u]"
-				" = [%u-%u/%u]\n",
+				" = [%u-%lld/%lld]\n",
 				blk-1-k-b0, blk-1-b0, grp,
 				SNAPSHOT_BLOCK_GROUP_OFFSET(prev_key)-k,
-				SNAPSHOT_BLOCK_GROUP_OFFSET(prev_key),
-			SNAPSHOT_BLOCK_GROUP(prev_key));
+				SNAPSHOT_BLOCK_TUPLE(prev_key));
 			di->ncopied += k+1;
 		}
 		/* reset subsequent blocks count */
@@ -404,18 +395,16 @@ void ext4_snapshot_dump(int n, struct inode *inode)
 	for (i = 0; i < EXT4_NDIR_BLOCKS; i++) {
 		if (ei->i_data[i]) {
 			nr = le32_to_cpu(ei->i_data[i]);
-			snapshot_debug_l(n, 0, "meta[%d] = [%u/%u] !!!\n", i,
-					SNAPSHOT_BLOCK_GROUP_OFFSET(nr),
-					SNAPSHOT_BLOCK_GROUP(nr));
+			snapshot_debug_l(n, 0, "meta[%d] = [%lld/%lld] !!!\n", i,
+					SNAPSHOT_BLOCK_TUPLE(nr));
 			di.nmeta++;
 		}
 	}
 	/* print indirect branch (snapshot reserved blocks) */
 	nr = le32_to_cpu(ei->i_data[i++]);
 	if (nr)
-		snapshot_debug_l(n, 0, "ind[-1] = [%u/%u] !!!\n",
-				SNAPSHOT_BLOCK_GROUP_OFFSET(nr),
-				SNAPSHOT_BLOCK_GROUP(nr));
+		snapshot_debug_l(n, 0, "ind[-1] = [%lld/%lld] !!!\n",
+				SNAPSHOT_BLOCK_TUPLE(nr));
 	/* print double indirect branch (start of snapshot image) */
 	nr = le32_to_cpu(ei->i_data[i++]);
 	if (nr)

@@ -27,7 +27,9 @@ static int verify_group_input(struct super_block *sb,
 			      struct ext4_new_group_data *input)
 {
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
+#ifdef CONFIG_EXT4_FS_DEBUG
 	struct inode *active_snapshot = ext4_snapshot_has_active(sb);
+#endif
 #endif
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	struct ext4_super_block *es = sbi->s_es;
@@ -47,8 +49,7 @@ static int verify_group_input(struct super_block *sb,
 		input->blocks_count - 2 - overhead - sbi->s_itb_per_group;
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
-	if (EXT4_HAS_COMPAT_FEATURE(sb,
-		EXT4_FEATURE_COMPAT_EXCLUDE_INODE)) {
+	if (EXT4_HAS_COMPAT_FEATURE(sb, EXT4_FEATURE_COMPAT_EXCLUDE_INODE)) {
 		/* reserve first free block for exclude bitmap */
 		itend++;
 		free_blocks_count--;
@@ -197,7 +198,7 @@ static int setup_new_group_blocks(struct super_block *sb,
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	ext4_fsblk_t start = ext4_group_first_block_no(sb, input->group);
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
-	ext4_fsblk_t itend = input->inode_table + sbi->s_itb_per_group;
+	ext4_fsblk_t itb = sbi->s_itb_per_group;
 #endif
 	int reserved_gdb = ext4_bg_has_super(sb, input->group) ?
 		le16_to_cpu(sbi->s_es->s_reserved_gdt_blocks) : 0;
@@ -266,6 +267,8 @@ static int setup_new_group_blocks(struct super_block *sb,
 			       GFP_NOFS);
 	if (err)
 		goto exit_bh;
+	for (i = 0, bit = gdblocks + 1; i < reserved_gdb; i++, bit++)
+		ext4_set_bit(bit, bh->b_data);
 
 	ext4_debug("mark block bitmap %#04llx (+%llu)\n", input->block_bitmap,
 		   input->block_bitmap - start);
@@ -275,25 +278,28 @@ static int setup_new_group_blocks(struct super_block *sb,
 	ext4_set_bit(input->inode_bitmap - start, bh->b_data);
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
-	if (EXT4_HAS_COMPAT_FEATURE(sb,
-		EXT4_FEATURE_COMPAT_EXCLUDE_INODE))
-		{
-			/* clear reserved exclude bitmap block */
-			ext4_set_bit(itend - start,bh->b_data);
-			itend++;
-		}
+	if (EXT4_HAS_COMPAT_FEATURE(sb, EXT4_FEATURE_COMPAT_EXCLUDE_INODE))
+		/* Zero out exclude bitmap block following inode table */
+		itb++;
 #endif
 	/* Zero out all of the inode table blocks */
 	block = input->inode_table;
 	ext4_debug("clear inode table blocks %#04llx -> %#04llx\n",
 			block, sbi->s_itb_per_group);
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
-	err = sb_issue_zeroout(sb, block, itend - block, GFP_NOFS);
+	err = sb_issue_zeroout(sb, block, itb, GFP_NOFS);
 #else
-	err = sb_issue_zeroout(sb, block, sbi->s_itb_per_group + 1, GFP_NOFS);
+	err = sb_issue_zeroout(sb, block, sbi->s_itb_per_group, GFP_NOFS);
 #endif
 	if (err)
 		goto exit_bh;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
+	for (i = 0, bit = block - start; i < itb; i++, bit++)
+#else
+	for (i = 0, bit = input->inode_table - start;
+	     i < sbi->s_itb_per_group; i++, bit++)
+#endif
+		ext4_set_bit(bit, bh->b_data);
 
 	if ((err = extend_or_restart_transaction(handle, 2, bh)))
 		goto exit_bh;

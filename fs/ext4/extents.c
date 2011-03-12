@@ -1236,7 +1236,7 @@ static int ext4_ext_search_left(struct inode *inode,
 		return 0;
 	}
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	if (*logical < (le32_to_cpu(ex->ee_block) + ee_len)) {
 		*logical -= 1;
 		*phys = ext4_ext_pblock(ex) + *logical;
@@ -1312,7 +1312,7 @@ static int ext4_ext_search_right(struct inode *inode,
 		return 0;
 	}
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	if (*logical < (le32_to_cpu(ex->ee_block) + ee_len)) {
 		*logical += 1;
 		*phys = ext4_ext_pblock(ex) + *logical;
@@ -2841,7 +2841,7 @@ fix_extent_len:
 	return err;
 }
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 /*
  * This function is called by ext4_ext_map_blocks() from
  * ext4_get_blocks_dio_write() when DIO to write
@@ -3379,7 +3379,7 @@ ext4_ext_handle_uninitialized_extents(handle_t *handle, struct inode *inode,
 
 	/* get_block() before submit the IO, split the extent */
 	if ((flags & EXT4_GET_BLOCKS_PRE_IO)) {
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 		ret = ext4_split_extents(handle, inode, map, path, flags);
 #else
 		ret = ext4_split_unwritten_extents(handle, inode, map,
@@ -3510,10 +3510,11 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 {
 	struct ext4_ext_path *path = NULL;
 	struct ext4_extent_header *eh;
-	struct ext4_extent newex, *ex;
+	struct ext4_extent newex, *ex = NULL;
 	ext4_fsblk_t newblock = 0;
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	ext4_fsblk_t oldblock = 0;
+	int maxblocks;
 #endif
 	int err = 0, depth, ret, cache_type;
 	unsigned int allocated = 0;
@@ -3546,7 +3547,7 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 			/* number of remaining blocks in the extent */
 			allocated = ext4_ext_get_actual_len(&newex) -
 				(map->m_lblk - le32_to_cpu(newex.ee_block));
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 			goto found;
 #else
 			goto out;
@@ -3605,7 +3606,7 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 				ext4_ext_put_in_cache(inode, ee_block,
 							ee_len, ee_start,
 							EXT4_EXT_CACHE_EXTENT);
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 				goto found;
 #else
 				goto out;
@@ -3631,7 +3632,7 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		goto out2;
 	}
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	/*
 	 * two cases:
 	 * 1. the request block is found.
@@ -3652,7 +3653,9 @@ found:
 		 * XXX With delayed-move-write support,
 		 * multi-blocks should be moved each time.
 		 */
-		err = ext4_snapshot_get_move_access(handle, inode, newblock, 0);
+		maxblocks = 1;
+		err = ext4_snapshot_get_move_access(handle, inode, newblock,
+				&maxblocks, 0);
 		if (err > 0) {
 			if (!(flags & EXT4_GET_BLOCKS_CREATE)) {
 				/* Do not map found block. */
@@ -3687,7 +3690,7 @@ found:
 	 */
 
 	/* find neighbour allocated blocks */
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	/*
 	 * TODO MOW case needs further consideration. 
 	 */
@@ -3719,7 +3722,7 @@ found:
 	newex.ee_len = cpu_to_le16(map->m_len);
 
 	/* Overlap checking is not needed for MOW case. */
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	if (oldblock) {
 		/*
 		 * Overlap happens for MOW.
@@ -3781,14 +3784,15 @@ found:
 	if (err)
 		goto out2;
 
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	if (oldblock) {
 		/*
 		 * Move oldblock to snapshot.
 		 * XXX delayed-mow needs moving multi blocks a time.
 		 */
+		maxblocks = map->m_len;
 		err = ext4_snapshot_get_move_access(handle, inode,
-				oldblock, 1);
+				oldblock, &maxblocks, 1);
 		if (err < 1) {
 			/* MOW fails. */
 			err = err ? : -EIO;	

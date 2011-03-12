@@ -175,7 +175,9 @@ int __ext4_journal_release_buffer(const char *where, handle_t *handle,
 	if (err > 0) {
 		/* well, we can't say we didn't try - now lets hope
 		 * we have enough buffer credits to spare */
-		snapshot_debug(1, "%s: warning: couldn't extend transaction "
+		snapshot_debug(handle->h_buffer_credits < EXT4_MAX_TRANS_DATA
+				? 1 : 2,
+				"%s: warning: couldn't extend transaction "
 				"from %s (credits=%d/%d)\n", __func__,
 				where, handle->h_buffer_credits,
 				((ext4_handle_t *)handle)->h_user_credits);

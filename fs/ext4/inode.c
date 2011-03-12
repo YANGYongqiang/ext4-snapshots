@@ -172,7 +172,7 @@ int ext4_truncate_restart_trans(handle_t *handle, struct inode *inode,
 	 */
 	BUG_ON(EXT4_JOURNAL(inode) == NULL);
 	jbd_debug(2, "restarting handle %p\n", handle);
-#ifdef CONFIG_NEXT3_FS_SNAPSHOT_CLEANUP
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
 	/*
 	 * Snapshot shrink/merge/clean do not take i_data_sem, so we cannot
 	 * release it here. Luckily, snapshot files are not writable,
@@ -839,10 +839,7 @@ static int ext4_alloc_branch(handle_t *handle, struct inode *inode,
 				return err;
 		}
 		/* charge snapshot file owner for moved blocks */
-		if (dquot_alloc_block(inode, *blks)) {
-			err = -EDQUOT;
-			goto failed;
-		}
+		dquot_alloc_block_nofail(inode, *blks);
 		num = *blks;
 		new_blocks[indirect_blks] = current_block;
 	} else
@@ -1125,6 +1122,9 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	int depth;
 	int count = 0;
 	ext4_fsblk_t first_block = 0;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	int maxblocks;
+#endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
 	struct buffer_head *sbh = NULL;
 #endif
@@ -1139,28 +1139,55 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	partial = ext4_get_branch(inode, depth, offsets, chain, &err);
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	err = 0;
+	maxblocks = map->m_len;
 	if (!partial && (flags & EXT4_GET_BLOCKS_MOVE_ON_WRITE)) {
 		BUG_ON(!ext4_snapshot_should_move_data(inode));
 		first_block = le32_to_cpu(chain[depth - 1].key);
-		blocks_to_boundary = 0;
-		/* should move 1 data block to snapshot? */
-		err = ext4_snapshot_get_move_access(handle, inode,
-				first_block, 0);
-		if (err)
-			/* do not map found block */
-			partial = chain + depth - 1;
-		if (err < 0)
-			/* cleanup the whole chain and exit */
-			goto cleanup;
-		if (err > 0 && !(flags & EXT4_GET_BLOCKS_CREATE)) {
+		if (!(flags & EXT4_GET_BLOCKS_CREATE)) {
 			/*
-			 * This is a lookup. Return EXT4_MAP_MOW via 
-			 * map->m_flags to tell ext4_map_blocks() that 
-			 * the found block should be moved to snapshot. 
+			 * First call from ext4_map_blocks():
+			 * test if first_block should be moved to snapshot?
 			 */
-			map->m_flags |= EXT4_MAP_MOW;
+			err = ext4_snapshot_get_move_access(handle, inode,
+							    first_block, 
+							    &maxblocks, 0);
+			if (err < 0) {
+				/* cleanup the whole chain and exit */
+				partial = chain + depth - 1;
+				goto cleanup;
+			}
+			if (err > 0) {
+				/*
+				 * Return EXT4_MAP_MOW via map->m_flags
+				 * to tell ext4_map_blocks() that the
+				 * found block should be moved to snapshot.
+				 */
+				map->m_flags |= EXT4_MAP_MOW;
+				map->m_pblk = first_block;
+			}
+			/*
+			 * Set max. blocks to map to max. blocks, which
+			 * ext4_snapshot_get_move_access() allows us to handle
+			 * (move or not move) in one ext4_map_blocks() call.
+			 */
+			map->m_len = maxblocks;
+		} else if (map->m_flags & EXT4_MAP_MOW &&
+				map->m_pblk == first_block) {
+			/*
+			 * Second call from ext4_map_blocks():
+			 * If mapped block hasn't change, we can rely the
+			 * cached result from the first call.
+			 */
+			err = 1;
 		}
 	}
+	if (err)
+		/* do not map found block - it should be moved to snapshot */
+		partial = chain + depth - 1;
+	else
+		/* map->m_len blocks do not need to be moved to snapshot */
+		map->m_flags &= ~EXT4_MAP_MOW; 
 
 #endif
 	/* Simplest case - block found, no allocation needed */
@@ -1236,12 +1263,13 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 
 #endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
-	if (*(partial->p)) {
+	if (map->m_flags & EXT4_MAP_MOW) {
 		int ret;
-
+		maxblocks = 1;
 		/* move old block to snapshot */
 		ret = ext4_snapshot_get_move_access(handle, inode,
-				le32_to_cpu(*(partial->p)), 1);
+						    le32_to_cpu(*(partial->p)),
+						    &maxblocks, 1);
 		if (ret < 1) {
 			/* failed to move to snapshot - free new block */
 			ext4_free_blocks(handle, inode, partial->bh,
@@ -1545,7 +1573,7 @@ int ext4_map_blocks(handle_t *handle, struct inode *inode,
 	down_read((&EXT4_I(inode)->i_data_sem));
 #endif
 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)) {
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 		retval = ext4_ext_map_blocks(handle, inode, map,
 				flags & EXT4_GET_BLOCKS_MOVE_ON_WRITE);
 #else
@@ -1570,27 +1598,25 @@ int ext4_map_blocks(handle_t *handle, struct inode *inode,
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 	if (retval > 0 && (map->m_flags & EXT4_MAP_MOW)) {
 		/*
-		 * If mow is needed on the requested block and 
+		 * If mow is needed on the requested block and
 		 * request comes from delayed-allocation-write path,
-		 * we do mow here. This will avoid an extra lookup 
+		 * we do mow here. This will avoid an extra lookup
 		 * in delayed-allocation-write path.
 		 */
 		if (flags & EXT4_GET_BLOCKS_DELAY_CREATE)
 			flags |= EXT4_GET_BLOCKS_CREATE;
-#ifdef CONFIG_NEXT3_FS_SNAPSHOT_HOOKS_DIO
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DIO
 		/*
 		 * If mow is needed on the requested block and 
 		 * request comes from async-direct-io-write path,
 		 * we return an unmapped buffer to fall back to buffered I/O.
 		 */
 		if (flags & EXT4_GET_BLOCKS_PRE_IO) {
-			map->m_flags &= ~EXT4_MAP_MAPPED; 
+			map->m_flags &= ~EXT4_MAP_MAPPED;
 			retval = 0;
 		}
 #endif
 	}
-	/* Clear EXT4_MAP_MOW, it is not needed any more. */
-	map->m_flags &= ~EXT4_MAP_MOW; 
 #endif
 	/* If it is only a block(s) look up */
 	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0)
@@ -1670,6 +1696,12 @@ int ext4_map_blocks(handle_t *handle, struct inode *inode,
 		EXT4_I(inode)->i_delalloc_reserved_flag = 0;
 
 	up_write((&EXT4_I(inode)->i_data_sem));
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	/* Clear EXT4_MAP_MOW, it is not needed any more. */
+	map->m_flags &= ~EXT4_MAP_MOW; 
+#endif
+
 	if (retval > 0 && map->m_flags & EXT4_MAP_MAPPED) {
 		int ret = check_block_validity(inode, map);
 		if (ret != 0)
@@ -2007,13 +2039,8 @@ static void ext4_snapshot_write_begin(struct inode *inode,
 			set_buffer_partial_write(bh);
 	}
 }
-#else
-static void ext4_snapshot_write_begin(struct inode *inode, 
-				struct page *page, unsigned len) 
-{
-}
-#endif
 
+#endif
 static int ext4_get_block_write(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
 static int ext4_write_begin(struct file *file, struct address_space *mapping,
@@ -2056,7 +2083,10 @@ retry:
 		goto out;
 	}
 	*pagep = page;
-	ext4_snapshot_write_begin(inode, page, len);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	if (ext4_snapshot_feature(inode->i_sb))
+		ext4_snapshot_write_begin(inode, page, len);
+#endif
 
 	if (ext4_should_dioread_nolock(inode))
 		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
@@ -2562,9 +2592,12 @@ static int mpage_da_submit_io(struct mpage_da_data *mpd,
 			 */
 			if (unlikely(journal_data && PageChecked(page)))
 				err = __ext4_journalled_writepage(page, len);
-			else
+			else if (test_opt(inode->i_sb, MBLK_IO_SUBMIT))
 				err = ext4_bio_write_page(&io_submit, page,
 							  len, mpd->wbc);
+			else
+				err = block_write_full_page(page,
+					noalloc_get_block_write, mpd->wbc);
 
 			if (!err)
 				mpd->pages_written++;
@@ -3041,9 +3074,9 @@ static int ext4_da_get_block_prep(struct inode *inode, sector_t iblock,
 
 out:
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
-		/*We need to clear mow and partial write flag here */
-		clear_buffer_move_on_write(bh);
-		clear_buffer_partial_write(bh);
+	/*We need to clear mow and partial write flag here */
+	clear_buffer_move_on_write(bh);
+	clear_buffer_partial_write(bh);
 #endif
 	return 0;
 }
@@ -3666,8 +3699,11 @@ retry:
 		goto out;
 	}
 	*pagep = page;
-	ext4_snapshot_write_begin(inode, page, len);
-	
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	if (ext4_snapshot_feature(inode->i_sb))
+		ext4_snapshot_write_begin(inode, page, len);
+#endif
+
 	ret = __block_write_begin(page, pos, len, ext4_da_get_block_prep);
 	if (ret < 0) {
 		unlock_page(page);
@@ -3972,7 +4008,7 @@ static int ext4_releasepage(struct page *page, gfp_t wait)
 		return try_to_free_buffers(page);
 }
 
-#ifdef CONFIG_NEXT3_FS_SNAPSHOT_HOOKS_DIO
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DIO
 /*
  * ext4_get_block_dio used when preparing for a DIO write
  * to indirect mapped files with snapshots.
@@ -4052,7 +4088,7 @@ retry:
 		ret = blockdev_direct_IO(rw, iocb, inode,
 				 inode->i_sb->s_bdev, iov,
 				 offset, nr_segs,
-#ifdef CONFIG_NEXT3_FS_SNAPSHOT_HOOKS_DIO
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DIO
 				 (rw == WRITE) ? ext4_get_block_dio :
 #endif
 				 ext4_get_block, NULL);
@@ -5493,9 +5529,20 @@ has_buffer:
 
 int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
+	int in_mem = (!ext4_snapshot_feature(inode->i_sb) &&
+		!ext4_test_inode_state(inode, EXT4_STATE_XATTR));
+	
+	/*
+	 * We have all inode's data except xattrs in memory here,
+	 * but we must always read-in the entire inode block for COW.
+	 */
+	return __ext4_get_inode_loc(inode, iloc, in_mem);
+#else
 	/* We have all inode data except xattrs in memory here. */
 	return __ext4_get_inode_loc(inode, iloc,
 		!ext4_test_inode_state(inode, EXT4_STATE_XATTR));
+#endif
 }
 
 void ext4_set_inode_flags(struct inode *inode)
@@ -5540,8 +5587,8 @@ void ext4_get_inode_flags(struct ext4_inode_info *ei)
 	} while (cmpxchg(&ei->i_flags, old_fl, new_fl) != old_fl);
 }
 
-static blkcnt_t ext4_inode_blocks(struct ext4_inode *raw_inode,
-				  struct ext4_inode_info *ei)
+blkcnt_t ext4_inode_blocks(struct ext4_inode *raw_inode,
+			struct ext4_inode_info *ei)
 {
 	blkcnt_t i_blocks ;
 	struct inode *inode = &(ei->vfs_inode);
@@ -5663,24 +5710,12 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	if (ext4_snapshot_file(inode)) {
 		ei->i_next_snapshot_ino =
 			le32_to_cpu(raw_inode->i_disk_version);
-
-		/*
-		 * Dynamic snapshot flags are not stored on-disk, so
-		 * at this point, we only know that this inode has the
-		 * 'snapfile' flag, but we don't know if it is on the list.
-		 * snapshot_load() loads the on-disk snapshot list to memory
-		 * and snapshot_update() flags the snapshots on the list.
-		 * 'detached' snapshot files will not be accessible to user.
-		 * 'detached' snapshot files are a by-product of detaching the
-		 * on-disk snapshot list head with tune2fs -O ^has_snapshot.
-		 */
-		ei->i_flags &= ~EXT4_FL_SNAPSHOT_DYN_MASK;
 		/*
 		 * snapshot volume size is stored in i_disksize.
 		 * in-memory i_size of snapshot files is set to 0 (disabled).
 		 * enabling a snapshot is setting i_size to i_disksize.
 		 */
-		SNAPSHOT_SET_DISABLED(inode);
+		inode->i_size = 0;
 	}
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
 	if (ext4_snapshot_exclude_inode(inode)) {
@@ -5984,8 +6019,6 @@ static int ext4_do_update_inode(handle_t *handle,
 		 */
 		raw_inode->i_disk_version =
 			cpu_to_le32(ei->i_next_snapshot_ino);
-		/* dynamic snapshot flags are not stored on-disk */
-		raw_inode->i_flags &= cpu_to_le32(~EXT4_FL_SNAPSHOT_DYN_MASK);
 	} else {
 		raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
 		if (ei->i_extra_isize) {

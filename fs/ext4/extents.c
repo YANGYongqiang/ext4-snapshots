@@ -2898,8 +2898,6 @@ static int ext4_split_extents(handle_t *handle,
 	ee_len = ext4_ext_get_actual_len(ex);
 	allocated = ee_len - (map->m_lblk - ee_block);
 	newblock = map->m_lblk - ee_block + ext4_ext_pblock(ex);
-	printk("split extent: [%llu, %d] at %llu\n", ext4_ext_pblock(ex),
-			ee_len, newblock);
 	
 	uninitialized = ext4_ext_is_uninitialized(ex); 
 
@@ -2949,8 +2947,6 @@ static int ext4_split_extents(handle_t *handle,
 		ex3->ee_len = cpu_to_le16(allocated - map->m_len);
 		if (uninitialized)
 			ext4_ext_mark_uninitialized(ex3);
-		printk("after split extent3: [%llu, %d]\n", ext4_ext_pblock(ex3),
-				ext4_ext_get_actual_len(ex3));
 		err = ext4_ext_insert_extent(handle, inode, path, ex3, flags);
 		if (err == -ENOSPC && may_zeroout) {
 			err =  ext4_ext_zeroout(inode, &orig_ex);

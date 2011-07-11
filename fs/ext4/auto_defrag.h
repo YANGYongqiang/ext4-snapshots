@@ -18,4 +18,7 @@ extern int ext4_ext_try_to_defrag(handle_t *handle, struct inode *inode,
 				  struct ext4_extent *ex,
 				  struct ext4_extent *newex);
 
+int ext4_auto_defrag_async_read_blocks(struct inode *inode,
+				       ext4_fsblk_t goal,
+				       ext4_fsblk_t len);
 #endif

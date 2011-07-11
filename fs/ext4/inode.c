@@ -1829,6 +1829,12 @@ int ext4_get_block_mow(struct inode *inode, sector_t iblock,
 
 	if (ext4_snapshot_should_move_data(inode))
 		flags |= EXT4_GET_BLOCKS_MOVE_ON_WRITE;
+
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	if (ext4_should_auto_defrag(inode))
+		flags |= EXT4_GET_BLOCKS_AUTO_DEFRAG;
+#endif
+
 	return _ext4_get_block(inode, iblock, bh, flags);
 }
 
@@ -2088,10 +2094,9 @@ static void ext4_auto_defrag_write_begin(struct inode *inode, struct page *page)
 		 * make sure that get_block() is called even if the buffer is
 		 * mapped, but not if it is already marked with BH_Auto_defrag.
 		 */
-		if (!buffer_delay(bh) && !buffer_auto_defrag(bh) &&
-		    buffer_mapped(bh))
+		if (!buffer_auto_defrag(bh))
 			/* explicitly request defrag */
-			set_buffer_auto_defrag(bh);
+			clear_buffer_mapped(bh);
 		bh = bh->b_this_page;
 	} while (bh != head);
 }
@@ -3140,6 +3145,11 @@ static int ext4_da_get_block_prep(struct inode *inode, sector_t iblock,
 		flags |= EXT4_GET_BLOCKS_MOVE_ON_WRITE;
 
 #endif
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	if (ext4_should_auto_defrag(inode))
+		flags |= EXT4_GET_BLOCKS_AUTO_DEFRAG;
+#endif
+
 	/*
 	 * first, we need to know whether the block is allocated already
 	 * preallocated blocks are unmapped but should treated

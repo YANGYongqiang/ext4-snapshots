@@ -3214,6 +3214,23 @@ out:
 }
 #endif
 
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+/*
+ * This function lookup if the goal blocks of the requested blocks
+ * belong to snapshot,  If so, async reads on the goal blocks are
+ * issued,
+ * @inode: inode to be defragged.
+ * @map:   map info
+ */
+void ext4_auto_defrag_begin(struct inode *inode,
+			    struct ext4_fsblk_t goal)
+{
+	ext4_fsblk_t goal;
+	ar.goal = ext4_ext_find_goal(inode, path, map->m_lblk);
+	ext4_auto_defrag_async_read_blocks();
+}
+#endif
+
 /*
  * Block allocation/map/preallocation routine for extents based files
  *
@@ -3384,6 +3401,14 @@ found:
 			goto out2;
 	}
 
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	if (flags & EXT4_GET_BLOCKS_AUTO_DEFRAG) {
+		ext4_fsblk_t goal;
+		goal = ext4_ext_find_goal(inode, path, map->m_lblk);
+		err = ext4_auto_defrag_async_read_blocks(inode, goal,
+							 allocated);
+	}
+#endif
 	if (!(flags & EXT4_GET_BLOCKS_CREATE))
 		goto out;
 

@@ -82,6 +82,7 @@
 #define CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
 #define CONFIG_EXT4_FS_SNAPSHOT_CLEANUP_SHRINK
 #define CONFIG_EXT4_FS_SNAPSHOT_CLEANUP_MERGE
+#define CONFIG_EXT4_FS_AUTO_DEFRAG
 #endif
 #ifndef CONFIG_EXT4_FS_SNAPSHOT_
 #define CONFIG_EXT4_FS_SNAPSHOT_
@@ -655,7 +656,10 @@ struct ext4_new_group_data {
 	/* bypass journal and sync allocated indirect blocks directly to disk */
 #define EXT4_GET_BLOCKS_SYNC			0x800
 #endif
-
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	/* allocate blocks to defrag a file */
+#define EXT4_GET_BLOCKS_AUTO_DEFRAG		0x1000
+#endif
 /*
  * Flags used by ext4_free_blocks
  */
@@ -2438,6 +2442,9 @@ enum ext4_state_bits {
 				 */
 #endif
 #endif
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	BH_Auto_Defrag,	/* Data block need to be defragged */
+#endif
 };
 
 BUFFER_FNS(Uninit, uninit)
@@ -2448,6 +2455,9 @@ BUFFER_FNS(Partial_Write, partial_write)
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
 BUFFER_FNS(Tracked_Read, tracked_read)
 #endif
+#endif
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+BUFFER_FNS(Auto_Defrag, auto_defrag)
 #endif
 
 /*

@@ -696,4 +696,21 @@ static inline int ext4_snapshot_should_move_data(struct inode *inode)
 
 #endif
 #endif
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+/*
+ * check if @inode data blocks should be defragged.
+ */
+static inline int ext4_should_auto_defrag(struct inode *inode)
+{
+	if (!inode || !S_ISREG(inode->i_mode))
+		return 0;
+
+	if (ext4_snapshot_file(inode))
+		return 0;
+
+	if (!ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+		return 0;
+	return 1;
+}
+#endif
 #endif	/* _EXT4_JBD2_H */

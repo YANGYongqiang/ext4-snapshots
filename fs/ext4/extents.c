@@ -46,6 +46,7 @@
 #include "ext4_jbd2.h"
 #include "ext4_extents.h"
 #include "snapshot.h"
+#include "ext4_auto_defrag.h"
 
 static int ext4_ext_truncate_extend_restart(handle_t *handle,
 					    struct inode *inode,
@@ -3178,6 +3179,7 @@ static int ext4_ext_move_to_snapshot(handle_t *handle, struct inode *inode,
 	} else {
 		/*
 		 * Move to snapshot successfully.
+		 * TODO merge extent after finishing MOW
 		 */
 		err = ext4_split_extent(handle, inode, path, map, 0,
 					EXT4_GET_BLOCKS_PRE_IO);
@@ -3202,7 +3204,6 @@ static int ext4_ext_move_to_snapshot(handle_t *handle, struct inode *inode,
 		if (!err) {
 			/* splice new blocks to the inode*/
 			ext4_ext_store_pblock(ex, newblock);
-			ext4_ext_try_to_merge(inode, path, ex);
 			err = ext4_ext_dirty(handle, inode,
 					     path + depth);
 		}
@@ -3212,6 +3213,7 @@ out:
 	return err;
 }
 #endif
+
 /*
  * Block allocation/map/preallocation routine for extents based files
  *
@@ -3397,6 +3399,13 @@ found:
 		ex = path[depth].p_ext;
 	}
 #endif
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	ar.flags = 0;
+	if (newblock && (flags & EXT4_GET_BLOCKS_AUTO_DEFRAG)) {
+		ar.flags |= EXT4_MB_HINT_GOAL_ONLY;
+		oldblock = newblock;
+	}
+#endif
 	/*
 	 * Okay, we need to do block allocation.
 	 */
@@ -3454,7 +3463,11 @@ found:
 	ar.logical = map->m_lblk;
 	ar.len = allocated;
 	if (S_ISREG(inode->i_mode))
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+		ar.flags |= EXT4_MB_HINT_DATA;
+#else
 		ar.flags = EXT4_MB_HINT_DATA;
+#endif
 	else
 		/* disable in-core preallocation for non-regular files */
 		ar.flags = 0;
@@ -3496,9 +3509,20 @@ found:
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_EXTENT
 	if (oldblock) {
 		map->m_len = ar.len;
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+		BUG_ON(!(flags & (EXT4_GET_BLOCKS_MOVE_ON_WRITE |
+				  EXT4_GET_BLOCKS_AUTO_DEFRAG)));
+		if (flags & EXT4_GET_BLOCKS_MOVE_ON_WRITE)
+			err = ext4_ext_move_to_snapshot(handle, inode, map,
+				path, oldblock, newblock);
+		else
+			err = ext4_ext_try_to_defrag(handle, inode, path, map,
+						     ex, &newex);
+#else
 		BUG_ON(!(flags & EXT4_GET_BLOCKS_MOVE_ON_WRITE));
 		err = ext4_ext_move_to_snapshot(handle, inode, map, path,
 						oldblock, newblock);
+#endif
 	} else
 		err = ext4_ext_insert_extent(handle, inode,
 					     path, &newex, flags);

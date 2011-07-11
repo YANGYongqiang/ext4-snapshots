@@ -2067,6 +2067,35 @@ static void ext4_snapshot_write_begin(struct inode *inode,
 }
 
 #endif
+
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+/*
+ * This function is called by ext4_write_begin() and ext4_da_write_begin()
+ * to let buffers can be defragged.
+ */
+static void ext4_auto_defrag_write_begin(struct inode *inode, struct page *page)
+{
+	struct buffer_head *bh, *head;
+	if (!ext4_should_auto_defrag(inode))
+		return;
+
+	BUG_ON(!page_has_buffers(page));
+
+	bh = page_buffers(page);
+	head = bh;
+	do {
+		/*
+		 * make sure that get_block() is called even if the buffer is
+		 * mapped, but not if it is already marked with BH_Auto_defrag.
+		 */
+		if (!buffer_delay(bh) && !buffer_auto_defrag(bh) &&
+		    buffer_mapped(bh))
+			/* explicitly request defrag */
+			set_buffer_auto_defrag(bh);
+		bh = bh->b_this_page;
+	} while (bh != head);
+}
+#endif
 static int ext4_get_block_write(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
 static int ext4_write_begin(struct file *file, struct address_space *mapping,
@@ -2114,6 +2143,10 @@ retry:
 		ext4_snapshot_write_begin(inode, page, len, 0);
 #endif
 
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	ext4_auto_defrag_write_begin(inode, page);
+#endif
+
 	if (ext4_should_dioread_nolock(inode))
 		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
 	else
@@ -2158,6 +2191,7 @@ retry:
 
 	if (ret == -ENOSPC && ext4_should_retry_alloc(inode->i_sb, &retries))
 		goto retry;
+	
 out:
 	return ret;
 }
@@ -2730,6 +2764,9 @@ static void mpage_da_map_and_submit(struct mpage_da_data *mpd)
 	if ((mpd->b_size == 0) ||
 	    ((mpd->b_state  & (1 << BH_Mapped)) &&
 	     !(mpd->b_state & (1 << BH_Delay)) &&
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	     !(mpd->b_state & (1 << BH_Auto_Defrag)) &&
+#endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 	     !(mpd->b_state & (1 << BH_Unwritten)) &&
 		 !(mpd->b_state & (1 << BH_Remap))))
@@ -2766,6 +2803,11 @@ static void mpage_da_map_and_submit(struct mpage_da_data *mpd)
 		get_blocks_flags |= EXT4_GET_BLOCKS_IO_CREATE_EXT;
 	if (mpd->b_state & (1 << BH_Delay))
 		get_blocks_flags |= EXT4_GET_BLOCKS_DELALLOC_RESERVE;
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	if (mpd->b_state & (1 << BH_Auto_Defrag))
+		get_blocks_flags |= EXT4_GET_BLOCKS_AUTO_DEFRAG |
+				    EXT4_GET_BLOCKS_DELALLOC_RESERVE;
+#endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 	if (mpd->b_state & (1 << BH_Remap))
 		get_blocks_flags |= EXT4_GET_BLOCKS_MOVE_ON_WRITE |
@@ -2855,11 +2897,21 @@ submit_io:
 }
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+#define BH_FLAGS ((1 << BH_Uptodate) | (1 << BH_Mapped) | (1 << BH_Delay) | \
+		(1 << BH_Unwritten) | (1 << BH_Remap) | (1 << BH_Auto_Defrag))
+#else
 #define BH_FLAGS ((1 << BH_Uptodate) | (1 << BH_Mapped) | \
 		(1 << BH_Delay) | (1 << BH_Unwritten) | (1 << BH_Remap))
+#endif
+#else
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+#define BH_FLAGS ((1 << BH_Uptodate) | (1 << BH_Mapped) | \
+		(1 << BH_Delay) | (1 << BH_Unwritten) | (1 << BH_Auto_Defrag))
 #else
 #define BH_FLAGS ((1 << BH_Uptodate) | (1 << BH_Mapped) | \
 		(1 << BH_Delay) | (1 << BH_Unwritten))
+#endif
 #endif
 
 /*
@@ -3766,7 +3818,9 @@ retry:
 	if (EXT4_SNAPSHOTS(inode->i_sb))
 		ext4_snapshot_write_begin(inode, page, len, 1);
 #endif
-
+#ifdef CONFIG_EXT4_FS_AUTO_DEFRAG
+	ext4_auto_defrag_write_begin(inode, page);
+#endif
 	ret = __block_write_begin(page, pos, len, ext4_da_get_block_prep);
 	if (ret < 0) {
 		unlock_page(page);

@@ -1112,7 +1112,8 @@ static int ext4_add_new_descs(handle_t *handle, struct super_block *sb,
  * @sb: super block
  */
 static int ext4_setup_new_desc(handle_t *handle, struct super_block *sb,
-			       struct ext4_new_group_data *input)
+			       struct ext4_new_group_data *input,
+			       __u16 bg_flags)
 {
 	struct ext4_sb_info * sbi = EXT4_SB(sb);
 	ext4_group_t group;
@@ -1141,7 +1142,7 @@ static int ext4_setup_new_desc(handle_t *handle, struct super_block *sb,
 	ext4_inode_table_set(sb, gdp, input->inode_table); /* LV FIXME */
 	ext4_free_blks_set(sb, gdp, input->free_blocks_count);
 	ext4_free_inodes_set(sb, gdp, EXT4_INODES_PER_GROUP(sb));
-	gdp->bg_flags = cpu_to_le16(EXT4_BG_INODE_ZEROED);
+	gdp->bg_flags = cpu_to_le16(bg_flags);
 	gdp->bg_checksum = ext4_group_desc_csum(sbi, input->group, gdp);
 
 	err = ext4_handle_dirty_metadata(handle, NULL, gdb_bh);
@@ -1155,6 +1156,26 @@ static int ext4_setup_new_desc(handle_t *handle, struct super_block *sb,
 	 * descriptor
 	 */
 	err = ext4_mb_add_groupinfo(sb, group, gdp);
+
+	return err;
+}
+
+/*
+ * ext4_setup_new_descs setups group descriptors of a flex groups
+ */
+static int ext4_setup_new_descs(handle_t *handle, struct super_block *sb,
+				struct ext4_new_flex_group_data *flex_gd)
+{
+	struct ext4_new_group_data *group_data = flex_gd->groups;
+	__u16 *bg_flags = flex_gd->bg_flags;
+	int i, err = 0;
+
+	for (i = 0; i < flex_gd->count; i++) {
+		err = ext4_setup_new_desc(handle, sb, group_data + i,
+					  bg_flags[i]);
+		if (err)
+			return err;
+	}
 
 	return err;
 }

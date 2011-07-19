@@ -335,6 +335,37 @@ mext_out:
 		return err;
 	}
 
+	case EXT4_IOC_RESIZE_FS: {
+		ext4_fsblk_t n_blocks_count;
+		struct super_block *sb = inode->i_sb;
+		int err = 0, err2 = 0;
+
+		err = ext4_resize_begin(sb);
+		if (err)
+			return err;
+
+		if (copy_from_user(&n_blocks_count, (__u64 __user *)arg,
+				   sizeof(__u64)))
+			return -EFAULT;
+
+		err = mnt_want_write(filp->f_path.mnt);
+		if (err)
+			return err;
+
+		err = ext4_resize_fs(sb, n_blocks_count);
+		if (EXT4_SB(sb)->s_journal) {
+			jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
+			err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
+			jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
+		}
+		if (err == 0)
+			err = err2;
+		mnt_drop_write(filp->f_path.mnt);
+		ext4_resize_end(sb);
+
+		return err;
+	}
+
 	case FITRIM:
 	{
 		struct super_block *sb = inode->i_sb;

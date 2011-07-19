@@ -1299,6 +1299,11 @@ static void mb_set_bits(void *bm, int cur, int len)
 	}
 }
 
+void ext4_set_bits(void *bm, int cur, int len)
+{
+	mb_set_bits(bm, cur, len);
+}
+
 static void mb_free_blocks(struct inode *inode, struct ext4_buddy *e4b,
 			  int first, int count)
 {

@@ -829,6 +829,78 @@ static int ext4_setup_new_desc(handle_t *handle, struct super_block *sb,
 	return err;
 }
 
+/*
+ * ext4_update_super() updates super so that new the added group can be seen
+ *   by the filesystem.
+ *
+ * @sb: super block
+ */
+static void ext4_update_super(struct super_block *sb,
+			      struct ext4_new_group_data *input)
+{
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
+	struct ext4_super_block *es = sbi->s_es;
+
+	/*
+	 * Make the new blocks and inodes valid next.  We do this before
+	 * increasing the group count so that once the group is enabled,
+	 * all of its blocks and inodes are already valid.
+	 *
+	 * We always allocate group-by-group, then block-by-block or
+	 * inode-by-inode within a group, so enabling these
+	 * blocks/inodes before the group is live won't actually let us
+	 * allocate the new space yet.
+	 */
+	ext4_blocks_count_set(es, ext4_blocks_count(es) +
+		input->blocks_count);
+	le32_add_cpu(&es->s_inodes_count, EXT4_INODES_PER_GROUP(sb));
+
+	/*
+	 * We need to protect s_groups_count against other CPUs seeing
+	 * inconsistent state in the superblock.
+	 *
+	 * The precise rules we use are:
+	 *
+	 * * Writers must perform a smp_wmb() after updating all dependent
+	 *   data and before modifying the groups count
+	 *
+	 * * Readers must perform an smp_rmb() after reading the groups count
+	 *   and before reading any dependent data.
+	 *
+	 * NB. These rules can be relaxed when checking the group count
+	 * while freeing data, as we can only allocate from a block
+	 * group after serialising against the group count, and we can
+	 * only then free after serialising in turn against that
+	 * allocation.
+	 */
+	smp_wmb();
+
+	/* Update the global fs size fields */
+	sbi->s_groups_count++;
+
+	/* Update the reserved block counts only once the new group is
+	 * active. */
+	ext4_r_blocks_count_set(es, ext4_r_blocks_count(es) +
+		input->reserved_blocks);
+
+	/* Update the free space counts */
+	percpu_counter_add(&sbi->s_freeblocks_counter,
+			   input->free_blocks_count);
+	percpu_counter_add(&sbi->s_freeinodes_counter,
+			   EXT4_INODES_PER_GROUP(sb));
+
+	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_FLEX_BG) &&
+	    sbi->s_log_groups_per_flex) {
+		ext4_group_t flex_group;
+		flex_group = ext4_flex_group(sbi, input->group);
+		atomic_add(input->free_blocks_count,
+			   &sbi->s_flex_groups[flex_group].free_blocks);
+		atomic_add(EXT4_INODES_PER_GROUP(sb),
+			   &sbi->s_flex_groups[flex_group].free_inodes);
+	}
+
+}
+
 /* Add group descriptor data to an existing or new group descriptor block.
  * Ensure we handle all possible error conditions _before_ we start modifying
  * the filesystem, because we cannot abort the transaction and not have it

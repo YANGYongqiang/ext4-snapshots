@@ -1178,7 +1178,7 @@ next_inode:
 
 	/* set as on-disk active snapshot */
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
-	sbi->s_es->s_snapshot_r_blocks_count = cpu_to_le64(snapshot_r_blocks);
+	sbi->s_es->s_snapshot_r_blocks = cpu_to_le64(snapshot_r_blocks);
 #endif
 
 	sbi->s_es->s_snapshot_id =

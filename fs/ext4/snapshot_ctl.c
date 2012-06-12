@@ -477,11 +477,18 @@ int __extend_or_restart_transaction(const char *where,
  * helper function for snapshot_create().
  */
 static inline int ext4_snapshot_preallocate(handle_t *handle,
-		struct inode *inode, int ntind)
+		struct inode *inode, ext4_fsblk_t snapshot_blocks)
 {
 	struct ext4_inode_info *ei = EXT4_I(inode);
 	struct buffer_head *bh = NULL;
-	int i, err;
+	const long double_blocks = (1 << (2 * SNAPSHOT_ADDR_PER_BLOCK_BITS));
+	int i, err, ntind = 0;
+
+	/* small filesystems can be mapped with just 1 double indirect block */
+	if (snapshot_blocks > double_blocks)
+		/* add up to 4 triple indirect blocks to map 2^32 blocks */
+		ntind += ((snapshot_blocks - double_blocks) >>
+			(3 * SNAPSHOT_ADDR_PER_BLOCK_BITS)) + 1;
 
 	if (ntind > 1 + EXT4_SNAPSHOT_EXTRA_TIND_BLOCKS)
 		return -EFBIG;
@@ -570,8 +577,7 @@ static int ext4_snapshot_create(struct inode *inode)
 	struct ext4_inode_info *ei = EXT4_I(inode);
 	int i, err, ret;
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
-	int count, ntind;
-	const long double_blocks = (1 << (2 * SNAPSHOT_ADDR_PER_BLOCK_BITS));
+	int count;
 	struct ext4_group_desc *desc;
 	unsigned long ino;
 	struct ext4_iloc iloc;
@@ -695,19 +701,11 @@ static int ext4_snapshot_create(struct inode *inode)
 		goto out_handle;
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
-	/* small filesystems can be mapped with just 1 double indirect block */
-	ntind = 0;
-	if (snapshot_blocks > double_blocks)
-		/* add up to 4 triple indirect blocks to map 2^32 blocks */
-		ntind += ((snapshot_blocks - double_blocks) >>
-			(3 * SNAPSHOT_ADDR_PER_BLOCK_BITS)) + 1;
-
 	/* pre-allocate and zero out [d,t]ind blocks */
-	err = ext4_snapshot_preallocate(handle, inode, ntind);
+	err = ext4_snapshot_preallocate(handle, inode, snapshot_blocks);
 	if (err) {
-		snapshot_debug(1, "failed to pre-allocate %d tind blocks"
-				" for snapshot (%u)\n",
-				ntind, inode->i_generation);
+		snapshot_debug(1, "failed to pre-allocate tind blocks"
+			       " for snapshot (%u)\n", inode->i_generation);
 		goto out_handle;
 	}
 

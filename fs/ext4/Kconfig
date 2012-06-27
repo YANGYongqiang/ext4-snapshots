@@ -185,6 +185,15 @@ config EXT4_FS_SNAPSHOT_FILE
 	  Snapshot files are marked with the snapfile flag and have special
 	  read-only address space ops.
 
+config EXT4_FS_SNAPCLONE_FILE
+	bool "snapclone file"
+	depends on EXT4_FS_SNAPSHOT
+	default y
+	help
+	  Ext4 snapclone implementation as a file inside the file system.
+	  Snapshot clones are marked with the snapclone flag and have special
+	  address space ops supporting writable snapshot.
+
 config EXT4_FS_SNAPSHOT_FILE_READ
 	bool "snapshot file - read through to block device"
 	depends on EXT4_FS_SNAPSHOT_FILE

@@ -50,6 +50,7 @@ static int ext4_release_file(struct inode *inode, struct file *filp)
 		ext4_discard_preallocations(inode);
 		up_write(&EXT4_I(inode)->i_data_sem);
 	}
+
 	if (is_dx(inode) && filp->private_data)
 		ext4_htree_free_dir_info(filp->private_data);
 
@@ -169,7 +170,11 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
 	char buf[64], *cp;
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+	if (ext4_snapshot_file(inode) && !ext4_snapclone_file(inode) &&
+#else
 	if (ext4_snapshot_file(inode) &&
+#endif
 		(filp->f_flags & O_ACCMODE) != O_RDONLY)
 		/*
 		 * allow only read-only access to snapshot files

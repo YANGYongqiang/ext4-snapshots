@@ -417,6 +417,15 @@ extern int ext4_snapshot_update(struct super_block *sb, int cleanup,
 extern void ext4_snapshot_destroy(struct super_block *sb);
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+extern int ext4_snapclone_take(struct dentry *old_dentry, struct inode *dir,
+			struct dentry *dentry);
+extern long ext4_snapclone_load(struct inode *);
+extern void ext4_snapclone_destroy(struct inode *);
+extern int ext4_snapclone_set_flags(handle_t *handle, struct inode *inode,
+				    unsigned int flags);
+#endif
+
 static inline int init_ext4_snapshot(void)
 {
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
@@ -442,6 +451,11 @@ extern int ext4_snapshot_merge_blocks(handle_t *handle,
 		ext4_lblk_t iblock, unsigned long maxblocks);
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+extern int ext4_snapshot_get_block(struct inode *inode, sector_t iblock,
+				   struct buffer_head *bh_result, int create);
+#endif
+
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 /* tests if @inode is a snapshot file */
 static inline int ext4_snapshot_file(struct inode *inode)
@@ -456,6 +470,22 @@ static inline int ext4_snapshot_file(struct inode *inode)
 static inline int ext4_snapshot_list(struct inode *inode)
 {
 	return ext4_test_inode_snapstate(inode, EXT4_SNAPSTATE_LIST);
+}
+#endif
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+/* tests if @inode is cloned */
+static inline int ext4_snapshot_cloned(struct inode *inode)
+{
+	return ext4_test_inode_snapstate(inode, EXT4_SNAPSTATE_CLONED);
+}
+
+/* tests if @inode is a snapclone file */
+static inline int ext4_snapclone_file(struct inode *inode)
+{
+	if (!S_ISREG(inode->i_mode))
+		/* a snapclone directory */
+		return 0;
+	return ext4_test_inode_flag(inode, EXT4_INODE_SNAPCLONE);
 }
 #endif
 

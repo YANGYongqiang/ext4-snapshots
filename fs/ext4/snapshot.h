@@ -208,6 +208,10 @@ extern int ext4_snapshot_test_and_move(const char *where,
 #define ext4_snapshot_move(handle, inode, block, pcount, move) (0)
 #endif
 
+extern void ext4_snapshot_fix_group_counters(struct super_block *sb,
+					struct buffer_head *block_bitmap,
+					struct ext4_group_desc *gdp,
+					ext4_group_t group);
 /*
  * Block access functions
  */
@@ -727,6 +731,8 @@ ext4_sb_find_get_block(const char *fn, struct super_block *sb, sector_t block)
 #define ext4_snapshot_end_pending_cow(sbh)
 #define ext4_snapshot_is_active(inode)		(0)
 #define ext4_snapshot_mow_in_tid(inode)		(1)
+
+#define ext4_snapshot_fix_group_counters(sb, bh, gdp, group)	(0)
 
 #endif /* CONFIG_EXT4_FS_SNAPSHOT */
 #endif	/* _LINUX_EXT4_SNAPSHOT_H */

@@ -1061,4 +1061,20 @@ out:
 	return err;
 }
 
+/*
+ * ext4_snapshot_fix_block_bitmap fixes group counters in snapshot.
+ * Callers should hold block group's lock.
+ */
+void ext4_snapshot_fix_group_counters(struct super_block *sb,
+				      struct buffer_head *block_bitmap,
+				      struct ext4_group_desc *gdp,
+				      ext4_group_t group)
+{
+	ext4_grpblk_t free_clusters;
+	free_clusters = ext4_mb_count_zero_bits(block_bitmap->b_data,
+						EXT4_BLOCKS_PER_GROUP(sb), 0);
+	ext4_free_group_clusters_set(sb, gdp, free_clusters);
+	gdp->bg_flags &= ~cpu_to_le16(EXT4_SNAP_BG_UNFIXED);
+	gdp->bg_checksum = ext4_group_desc_csum(EXT4_SB(sb), group, gdp);
+}
 #endif

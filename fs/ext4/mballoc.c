@@ -422,6 +422,17 @@ static inline int mb_find_next_bit(void *addr, int max, int start)
 	return ret;
 }
 
+int ext4_mb_count_zero_bits(void *addr, int max, int start)
+{
+	int bit = 0, count = 0;
+	while (start < max) {
+		bit = mb_find_next_zero_bit(addr, max, start);
+		start = mb_find_next_bit(addr, max, bit);
+		count += start - bit;
+	}
+
+	return count;
+}
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_COW
 /*
  * Find the largest range of set or clear bits.
@@ -916,6 +927,25 @@ static int ext4_mb_init_cache(struct page *page, char *incore)
 	for (i = 0; i < groups_per_page; i++)
 		if (bh[i] && !buffer_uptodate(bh[i]))
 			goto out;
+
+	for (i = 0; i < groups_per_page; i++) {
+		struct ext4_group_desc *desc;
+
+		if (first_group + i >= ngroups)
+			break;
+		desc = ext4_get_group_desc(sb, first_group + i, NULL);
+		if (desc == NULL)
+			goto out;
+		if (!(sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT &&
+		    desc->bg_flags & cpu_to_le16(EXT4_SNAP_BG_UNFIXED)))
+			continue;
+		ext4_lock_group(sb, first_group + i);
+		if (sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT &&
+		    desc->bg_flags & cpu_to_le16(EXT4_SNAP_BG_UNFIXED))
+			ext4_snapshot_fix_group_counters(sb, bh[i], desc,
+							 first_group + i);
+		ext4_unlock_group(sb, first_group + i);
+	}
 
 	err = 0;
 	first_block = page->index * blocks_per_page;

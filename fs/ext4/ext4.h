@@ -396,6 +396,8 @@ struct flex_groups {
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_BITMAP
 #define EXT4_BG_EXCLUDE_UNINIT	0x0008 /* Exclude bitmap not in use */
 #endif
+#define EXT4_SNAP_BG_UNFIXED	0x0010 /* Blocks used by snapshot is */
+				       /* not excluded */
 
 /*
  * Macro-instructions used to manage group descriptors
@@ -2130,6 +2132,7 @@ extern int ext4_trim_fs(struct super_block *, struct fstrim_range *);
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_COW
 extern int ext4_mb_test_bit_range(int bit, void *addr, int *pcount);
 #endif
+extern int ext4_mb_count_zero_bits(void *addr, int max, int start);
 
 /* inode.c */
 struct buffer_head *ext4_getblk(handle_t *, struct inode *,

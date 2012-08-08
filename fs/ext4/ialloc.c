@@ -933,8 +933,14 @@ got:
 		 * Set extent flag only for non-snapshot file, directory
 		 * and normal symlink
 		 */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+		if ((S_ISREG(mode) && !ext4_snapshot_file(inode) &&
+		     !ext4_snapclone_file(inode)) ||
+		    S_ISDIR(mode) || S_ISLNK(mode)) {
+#else
 		if ((S_ISREG(mode) && !ext4_snapshot_file(inode)) ||
 				S_ISDIR(mode) || S_ISLNK(mode)) {
+#endif
 #else
 		/* set extent flag only for directory, file and normal symlink*/
 		if (S_ISDIR(mode) || S_ISREG(mode) || S_ISLNK(mode)) {

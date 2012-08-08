@@ -87,13 +87,22 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				goto flags_out;
 		}
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
-
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+		/*
+		 * The SNAPFILE and SNAPCLONE flag can only be changed on directories by
+		 * the relevant capability.
+		 * It can only be inherited by regular files.
+		 */
+		if ((flags ^ oldflags) &
+		    (EXT4_SNAPFILE_FL | EXT4_SNAPCLONE_FL)) {
+#else
 		/*
 		 * The SNAPFILE flag can only be changed on directories by
 		 * the relevant capability.
 		 * It can only be inherited by regular files.
 		 */
 		if ((flags ^ oldflags) & EXT4_SNAPFILE_FL) {
+#endif
 			if (!S_ISDIR(inode->i_mode)) {
 				err = -ENOTDIR;
 				goto flags_out;
@@ -236,8 +245,14 @@ flags_out:
 		err = ext4_reserve_inode_write(handle, inode, &iloc);
 		if (err)
 			goto snapflags_err;
-
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+		if (ext4_snapclone_file(inode))
+			err = ext4_snapclone_set_flags(handle, inode, flags);
+		else
+			err = ext4_snapshot_set_flags(handle, inode, flags);
+#else 
 		err = ext4_snapshot_set_flags(handle, inode, flags);
+#endif
 		if (err)
 			goto snapflags_err;
 

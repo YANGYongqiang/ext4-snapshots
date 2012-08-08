@@ -474,12 +474,27 @@ struct flex_groups {
 #define EXT4_SNAPFILE_FL		0x01000000 /* snapshot file */
 #define EXT4_SNAPFILE_DELETED_FL	0x04000000 /* snapshot is deleted */
 #define EXT4_SNAPFILE_SHRUNK_FL		0x08000000 /* snapshot was shrunk */
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+#define EXT4_SNAPCLONE_FL		0x10000000 /* snapshot file */
+#endif
 /* end of snapshot flags */
 #endif
 #define EXT4_RESERVED_FL		0x80000000 /* reserved for ext4 lib */
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+#define EXT4_FL_USER_VISIBLE		0x114BDFFF /* User visible flags */
+#define EXT4_FL_USER_MODIFIABLE		0x114B80FF /* User modifiable flags */
 
+/* Flags that should be inherited by new inodes from their parent. */
+#define EXT4_FL_INHERITED (EXT4_SECRM_FL | EXT4_UNRM_FL | EXT4_COMPR_FL |\
+			   EXT4_SYNC_FL | EXT4_IMMUTABLE_FL | EXT4_APPEND_FL |\
+			   EXT4_NODUMP_FL | EXT4_NOATIME_FL |\
+			   EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
+			   EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL |\
+			   EXT4_SNAPFILE_FL | EXT4_SNAPCLONE_FL)
+
+#else
 #define EXT4_FL_USER_VISIBLE		0x014BDFFF /* User visible flags */
 #define EXT4_FL_USER_MODIFIABLE		0x014B80FF /* User modifiable flags */
 
@@ -489,6 +504,7 @@ struct flex_groups {
 			   EXT4_NODUMP_FL | EXT4_NOATIME_FL |\
 			   EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
 			   EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL | EXT4_SNAPFILE_FL)
+#endif
 #else
 #define EXT4_FL_USER_VISIBLE		0x004BDFFF /* User visible flags */
 #define EXT4_FL_USER_MODIFIABLE		0x004B80FF /* User modifiable flags */
@@ -549,6 +565,9 @@ enum {
 	EXT4_INODE_SNAPFILE	= 24,	/* Snapshot file/dir */
 	EXT4_INODE_SNAPFILE_DELETED = 26,	/* Snapshot is deleted */
 	EXT4_INODE_SNAPFILE_SHRUNK = 27,	/* Snapshot was shrunk */
+#endif
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+	EXT4_INODE_SNAPCLONE = 28,	/* Snapclone file/dir */
 #endif
 	EXT4_INODE_RESERVED	= 31,	/* reserved for ext4 lib */
 };
@@ -1081,6 +1100,9 @@ struct ext4_inode_info {
 #define EXT4_FLAGS_IS_SNAPSHOT		0x0010 /* Is a snapshot image */
 #define EXT4_FLAGS_FIX_SNAPSHOT		0x0020 /* Corrupted snapshot */
 #define EXT4_FLAGS_FIX_EXCLUDE		0x0040 /* Bad exclude bitmap */
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+#define EXT4_FLAGS_IS_SNAPCLONE		0x0080 /* Is a snapclone image */
+#endif
 
 #define EXT4_SET_FLAGS(sb, mask)				 \
 	do {							 \
@@ -1511,6 +1533,7 @@ enum {
 	EXT4_SNAPSTATE_SHRUNK = 5,	/* snapshot was shrunk (h) */
 	EXT4_SNAPSTATE_OPEN = 6,	/* snapshot is mounted (o) */
 	EXT4_SNAPSTATE_TAGGED = 7,	/* snapshot is tagged  (t) */
+	EXT4_SNAPSTATE_CLONED = 8,	/* snapshot is cloned  (c) */
 	EXT4_SNAPSTATE_LAST
 #endif
 };
@@ -2231,6 +2254,10 @@ extern int ext4_orphan_add(handle_t *, struct inode *);
 extern int ext4_orphan_del(handle_t *, struct inode *);
 extern int ext4_htree_fill_tree(struct file *dir_file, __u32 start_hash,
 				__u32 start_minor_hash, __u32 *next_hash);
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+extern int ext4_add_nondir(handle_t *handle,
+		struct dentry *dentry, struct inode *inode);
+#endif
 
 /* resize.c */
 extern int ext4_group_add(struct super_block *sb,

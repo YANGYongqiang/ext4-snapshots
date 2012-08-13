@@ -645,18 +645,21 @@ static int ext4_snapshot_get_block_access(struct inode *inode,
 		return 0;
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
-	if (prev == &ei->i_snaplist)
+	if (prev == &ei->i_snaplist) {
 		/* not on snapshots list? */
+		snapshot_debug(1, "snapshot is not on snapshot list\n");
 		return -EIO;
+	}
 
-	if (prev == &EXT4_SB(inode->i_sb)->s_snapshot_list)
+	if (prev == &EXT4_SB(inode->i_sb)->s_snapshot_list) {
 		/* active snapshot not found on list? */
+		snapshot_debug(1, "no active snapshot is found\n");
 		return -EIO;
+	}
 
 	/* read through to prev snapshot on the list */
 	ei = list_entry(prev, struct ext4_inode_info, i_snaplist);
 	*prev_snapshot = &ei->vfs_inode;
-
 	if (!ext4_snapshot_file(*prev_snapshot))
 		/* non snapshot file on the list? */
 		return -EIO;
@@ -919,8 +922,8 @@ static int ext4_snapshot_is_bitmap(struct super_block *sb,
 	return is_bitmap;
 }
 
-static int ext4_snapshot_get_block(struct inode *inode, sector_t iblock,
-			struct buffer_head *bh_result, int create)
+int ext4_snapshot_get_block(struct inode *inode, sector_t iblock,
+			    struct buffer_head *bh_result, int create)
 {
 	ext4_group_t block_group;
 	int err, is_bitmap;

@@ -936,11 +936,13 @@ static int ext4_mb_init_cache(struct page *page, char *incore)
 		desc = ext4_get_group_desc(sb, first_group + i, NULL);
 		if (desc == NULL)
 			goto out;
-		if (!(sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT &&
+		if (!((sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT ||
+		       sb->s_flags & EXT4_FLAGS_IS_SNAPCLONE) &&
 		    desc->bg_flags & cpu_to_le16(EXT4_SNAP_BG_UNFIXED)))
 			continue;
 		ext4_lock_group(sb, first_group + i);
-		if (sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT &&
+		if ((sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT ||
+		     sb->s_flags & EXT4_FLAGS_IS_SNAPCLONE) &&
 		    desc->bg_flags & cpu_to_le16(EXT4_SNAP_BG_UNFIXED))
 			ext4_snapshot_fix_group_counters(sb, bh[i], desc,
 							 first_group + i);

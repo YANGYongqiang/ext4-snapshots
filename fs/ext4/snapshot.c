@@ -521,12 +521,13 @@ int ext4_snapshot_test_and_exclude(const char *where, handle_t *handle,
 			goto out;
 	}
 
-	exclude_uninit = gdp->bg_flags & cpu_to_le16(EXT4_BG_EXCLUDE_UNINIT);
-	if (exclude && exclude_uninit) {
+	if (exclude) {
 		err = ext4_journal_get_write_access(handle, gdp_bh);
 		if (err)
 			goto out;
 	}
+
+	exclude_uninit = gdp->bg_flags & cpu_to_le16(EXT4_BG_EXCLUDE_UNINIT);
 
 	while (count > 0 && bit < SNAPSHOT_BLOCKS_PER_GROUP) {
 		if (!ext4_set_bit_atomic(sb_bgl_lock(EXT4_SB(sb),
@@ -568,15 +569,17 @@ int ext4_snapshot_test_and_exclude(const char *where, handle_t *handle,
 		if (err)
 			goto out;
 
-		if (exclude_uninit) {
+		if (exclude_uninit)
 			gdp->bg_flags &= cpu_to_le16(~EXT4_BG_EXCLUDE_UNINIT);
-			gdp->bg_checksum = ext4_group_desc_csum(EXT4_SB(sb),
-							        block_group, gdp);
-			err = ext4_handle_dirty_metadata(handle, NULL, gdp_bh);
-		}
+
+		gdp->bg_flags |= cpu_to_le16(EXT4_BG_SNAP_UNFIXED);
+		gdp->bg_checksum = ext4_group_desc_csum(EXT4_SB(sb),
+						        block_group, gdp);
+		err = ext4_handle_dirty_metadata(handle, NULL, gdp_bh);
 
 		trace_cow_add(handle, excluded, excluded);
 	}
+
 out:
 	brelse(exclude_bitmap_bh);
 	return err ? err : excluded;
@@ -1061,4 +1064,23 @@ out:
 	return err;
 }
 
+/*
+ * ext4_snapshot_fix_block_bitmap fixes group counters in snapshot.
+ * Callers should hold block group's lock.
+ */
+void ext4_snapshot_fix_group_counters(struct super_block *sb,
+				      struct buffer_head *block_bitmap,
+				      struct ext4_group_desc *gdp,
+				      ext4_group_t group)
+{
+	ext4_grpblk_t free_clusters, orig;
+	orig = ext4_free_group_clusters(sb, gdp);
+	free_clusters = ext4_mb_count_zero_bits(block_bitmap->b_data,
+						EXT4_BLOCKS_PER_GROUP(sb), 0);
+	BUG_ON(free_clusters - orig < 0);
+	ext4_free_group_clusters_set(sb, gdp, free_clusters);
+	gdp->bg_flags &= ~cpu_to_le16(EXT4_BG_SNAP_UNFIXED);
+	gdp->bg_checksum = ext4_group_desc_csum(EXT4_SB(sb), group, gdp);
+	percpu_counter_add(&EXT4_SB(sb)->s_freeclusters_counter, free_clusters - orig);
+}
 #endif

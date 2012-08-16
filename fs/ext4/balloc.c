@@ -735,7 +735,6 @@ ext4_fsblk_t ext4_count_free_clusters(struct super_block *sb)
 			continue;
 		desc_count += ext4_free_group_clusters(sb, gdp);
 	}
-
 	return desc_count;
 #endif
 }

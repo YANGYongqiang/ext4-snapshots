@@ -142,6 +142,9 @@ void ext4_evict_inode(struct inode *inode)
 
 	ext4_ioend_wait(inode);
 
+	if (ext4_snapclone_file(inode))
+		ext4_snapclone_destroy(inode);
+
 	if (inode->i_nlink) {
 		/*
 		 * When journalling data dirty buffers are tracked only in the
@@ -676,13 +679,22 @@ static int ext4_partial_write_begin(struct inode *inode, sector_t iblock,
 	map.m_lblk = iblock;
 	map.m_len = 1;
 
-	ret = ext4_map_blocks(NULL, inode, &map, 0);
+	if (ext4_snapclone_file(inode)) {
+		ret = ext4_snapshot_get_block(inode, iblock, bh, 0);
+		if (ret == 0) {
+			BUG_ON(!buffer_mapped(bh));
+			ret = 1;
+		}
+	} else {
+		ret = ext4_map_blocks(NULL, inode, &map, 0);
+	}
 	if (ret <= 0)
 		return ret;
 
 	if (!buffer_uptodate(bh) && !buffer_unwritten(bh)) {
 		/* map existing block for read */
-		map_bh(bh, inode->i_sb, map.m_pblk);
+		if (!ext4_snapclone_file(inode))
+			map_bh(bh, inode->i_sb, map.m_pblk);
 		ll_rw_block(READ, 1, &bh);
 		wait_on_buffer(bh);
 		/* clear existing block mapping */
@@ -728,8 +740,9 @@ static int _ext4_get_block(struct inode *inode, sector_t iblock,
 	}
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
-	if ((flags & EXT4_GET_BLOCKS_MOVE_ON_WRITE) &&
-	     buffer_partial_write(bh)) {
+	if (((flags & EXT4_GET_BLOCKS_MOVE_ON_WRITE) ||
+	     ext4_snapclone_file(inode)) &&
+	    buffer_partial_write(bh)) {
 		/* Read existing block data before moving it to snapshot */
 		ret = ext4_partial_write_begin(inode, iblock, bh);
 		if (ret < 0)
@@ -1000,8 +1013,9 @@ static void ext4_snapshot_write_begin(struct inode *inode,
 	 * guarantee this we have to know that the transaction is not restarted.
 	 * Can we count on that?
 	 */
-	if (!EXT4_SNAPSHOTS(inode->i_sb) ||
-	    !ext4_snapshot_should_move_data(inode))
+	if ((!EXT4_SNAPSHOTS(inode->i_sb) ||
+	    !ext4_snapshot_should_move_data(inode)) &&
+	    !(ext4_snapclone_file(inode)))
 		return;
 
 	if (!page_has_buffers(page))
@@ -1011,14 +1025,15 @@ static void ext4_snapshot_write_begin(struct inode *inode,
 	/*
 	 * make sure that get_block() is called even if the buffer is
 	 * mapped, but not if it is already a part of any transaction.
-	 * in data=ordered,the only mode supported by ext4, all dirty
+	 * in data=ordered,the only mode supported by ext4 snapshot, all dirty
 	 * data buffers are flushed on snapshot take via freeze_fs()
 	 * API.
 	 */
 	if (!buffer_jbd(bh) && !buffer_delay(bh)) {
 		clear_buffer_mapped(bh);
 		/* explicitly request move-on-write */
-		if (!delay && len < PAGE_CACHE_SIZE)
+		if ((!delay || ext4_snapclone_file(inode)) &&
+		    len < PAGE_CACHE_SIZE)
 			/* read block before moving it to snapshot */
 			set_buffer_partial_write(bh);
 	}
@@ -3408,6 +3423,43 @@ static const struct address_space_operations ext4_da_aops = {
 	.is_partially_uptodate  = block_is_partially_uptodate,
 	.error_remove_page	= generic_error_remove_page,
 };
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+static const struct address_space_operations ext4_snapclone_da_aops = {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+	.readpage		= ext4_snapshot_readpage,
+#else
+	.readpage		= ext4_readpage,
+	.readpages		= ext4_readpages,
+#endif
+	.writepage		= ext4_writepage,
+	.writepages		= ext4_da_writepages,
+	.write_begin		= ext4_da_write_begin,
+	.write_end		= ext4_da_write_end,
+	.bmap			= ext4_bmap,
+	.invalidatepage		= ext4_da_invalidatepage,
+	.releasepage		= ext4_releasepage,
+};
+
+#endif
+
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+static const struct address_space_operations ext4_snapclone_aops = {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+	.readpage		= ext4_snapshot_readpage,
+#else
+	.readpage		= ext4_readpage,
+	.readpages		= ext4_readpages,
+#endif
+	.writepage		= ext4_writepage,
+	.write_begin		= ext4_write_begin,
+	.write_end		= ext4_ordered_write_end,
+	.bmap			= ext4_bmap,
+	.invalidatepage		= ext4_invalidatepage,
+	.releasepage		= ext4_releasepage,
+};
+
+#endif
+
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 static int ext4_no_writepage(struct page *page,
 				struct writeback_control *wbc)
@@ -3443,6 +3495,13 @@ static const struct address_space_operations ext4_snapfile_aops = {
 
 void ext4_set_aops(struct inode *inode)
 {
+	/* We  can not change order of snapclone and snapshot. */
+	if (ext4_snapclone_file(inode) &&
+		test_opt(inode->i_sb, DELALLOC))
+		inode->i_mapping->a_ops = &ext4_snapclone_da_aops;
+	else if (ext4_snapclone_file(inode))
+		inode->i_mapping->a_ops = &ext4_snapclone_aops;
+	else
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 	if (ext4_snapshot_file(inode))
 		inode->i_mapping->a_ops = &ext4_snapfile_aops;
@@ -4090,7 +4149,11 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	}
 #endif
 	INIT_LIST_HEAD(&ei->i_orphan);
-
+	if (ext4_snapclone_file(inode)) {
+		ret = ext4_snapclone_load(inode);
+		if (ret)
+			goto bad_inode;
+	}
 	/*
 	 * Set transaction id's of transactions that have to be committed
 	 * to finish f[data]sync. We set them to currently running transaction

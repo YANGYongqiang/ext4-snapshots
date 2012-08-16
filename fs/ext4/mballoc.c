@@ -928,7 +928,8 @@ static int ext4_mb_init_cache(struct page *page, char *incore)
 		if (bh[i] && !buffer_uptodate(bh[i]))
 			goto out;
 
-	if (!(sb->s_flags & EXT4_FLAGS_IS_SNAPSHOT))
+	if (!(sb->s_flags & (EXT4_FLAGS_IS_SNAPSHOT |
+			     EXT4_FLAGS_IS_SNAPCLONE)))
 		goto bg_fixed;
 	for (i = 0; i < groups_per_page; i++) {
 		struct ext4_group_desc *desc;

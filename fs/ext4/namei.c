@@ -1712,8 +1712,7 @@ static void ext4_dec_count(handle_t *handle, struct inode *inode)
 		drop_nlink(inode);
 }
 
-
-static int ext4_add_nondir(handle_t *handle,
+int ext4_add_nondir(handle_t *handle,
 		struct dentry *dentry, struct inode *inode)
 {
 	int err = ext4_add_entry(handle, dentry, inode);
@@ -2216,16 +2215,13 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 			     inode->i_ino, inode->i_nlink);
 		set_nlink(inode, 1);
 	}
-#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
-	/* prevent unlink of files on snapshot list */
-	if (inode->i_nlink == 1 &&
+	if (inode->i_nlink >= 1 &&
 		ext4_snapshot_list(inode)) {
 		snapshot_debug(1, "snapshot (%u) cannot be unlinked!\n",
 				inode->i_generation);
 		retval = -EPERM;
 		goto end_unlink;
 	}
-#endif
 	retval = ext4_delete_entry(handle, dir, de, bh);
 	if (retval)
 		goto end_unlink;
@@ -2362,6 +2358,11 @@ static int ext4_link(struct dentry *old_dentry,
 
 	if (inode->i_nlink >= EXT4_LINK_MAX)
 		return -EMLINK;
+
+#ifdef CONFIG_EXT4_FS_SNAPCLONE_FILE
+	if (ext4_snapshot_file(inode))
+		return ext4_snapclone_take(old_dentry, dir, dentry);
+#endif
 
 	dquot_initialize(dir);
 
